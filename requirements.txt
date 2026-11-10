@@ -1,0 +1,10 @@
+discord.py
+paho-mqtt
+httpx
+apscheduler
+python-dotenv
+groq
+spotipy
+pocketbase
+psutil
+aiohttp

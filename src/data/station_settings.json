@@ -1,0 +1,363 @@
+{
+  "device_settings": {
+    "darkmode_mode": "custom",
+    "darkmode_start": "23:00",
+    "darkmode_end": "05:00",
+    "led_brightness": 100,
+    "buzzer_enabled": true,
+    "buzzer_duration": 40,
+    "weather_alert_enabled": false,
+    "weather_alert_time": "06:15",
+    "weather_city": "Ha Long",
+    "battery_low_thresh": 25,
+    "battery_high_thresh": 85,
+    "quote_schedules": [
+      "06:30",
+      "12:00",
+      "20:00"
+    ],
+    "clock_style": "flip",
+    "hardware_config_version": 8,
+    "applied_by_station": false,
+    "last_ack_error": null
+  },
+  "clock_config": {
+    "style": "digital_classic",
+    "time_format": "24h",
+    "show_seconds": true,
+    "show_date": true,
+    "show_ampm": false,
+    "language": "vi",
+    "animation_enabled": true,
+    "animation_speed": 1.0,
+    "accent_color": "#38BDF8",
+    "config_version": 1,
+    "applied_by_station": false,
+    "last_applied_style": "digital_classic",
+    "last_error": null
+  },
+  "notes": [
+    {
+      "id": "note_1793724657_3594",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-03T23:50:57.769626+07:00"
+    },
+    {
+      "id": "note_1793724718_2594",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-03T23:51:58.593647+07:00"
+    },
+    {
+      "id": "note_1793724837_3533",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-03T23:53:57.522522+07:00"
+    },
+    {
+      "id": "note_1793724913_6574",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-03T23:55:13.305501+07:00"
+    },
+    {
+      "id": "note_1793768754_2003",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-04T12:05:54.923251+07:00"
+    },
+    {
+      "id": "note_1793768907_7445",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-04T12:08:27.942776+07:00"
+    },
+    {
+      "id": "note_1793768925_6922",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-04T12:08:45.495685+07:00"
+    },
+    {
+      "id": "note_1793768947_3473",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-04T12:09:07.009856+07:00"
+    },
+    {
+      "id": "note_1793769472_8872",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-04T12:17:52.757586+07:00"
+    },
+    {
+      "id": "note_1793787573_5869",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-04T17:19:33.254443+07:00"
+    },
+    {
+      "id": "note_1793787634_6234",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-04T17:20:34.327826+07:00"
+    },
+    {
+      "id": "note_1793787656_8311",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-04T17:20:56.764956+07:00"
+    },
+    {
+      "id": "note_1793789092_9384",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-04T17:44:52.490425+07:00"
+    },
+    {
+      "id": "note_1793789105_1384",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-04T17:45:05.799983+07:00"
+    },
+    {
+      "id": "note_1793789444_8941",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-04T17:50:44.862578+07:00"
+    },
+    {
+      "id": "note_1793790411_2653",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-04T18:06:51.682149+07:00"
+    },
+    {
+      "id": "note_1793805179_3356",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-04T22:12:59.757516+07:00"
+    },
+    {
+      "id": "note_1793805260_7442",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-04T22:14:20.401836+07:00"
+    },
+    {
+      "id": "note_1793806302_7716",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-04T22:31:42.748186+07:00"
+    },
+    {
+      "id": "note_1793806325_4081",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-04T22:32:05.005766+07:00"
+    },
+    {
+      "id": "note_1793865690_5111",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-05T15:01:30.436267+07:00"
+    },
+    {
+      "id": "note_1793866284_6359",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-05T15:11:24.439453+07:00"
+    },
+    {
+      "id": "note_1793866297_4128",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-05T15:11:37.460433+07:00"
+    },
+    {
+      "id": "note_1793866501_1060",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-05T15:15:01.223770+07:00"
+    },
+    {
+      "id": "note_1793869587_1897",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-05T16:06:27.625415+07:00"
+    },
+    {
+      "id": "note_1794033084_8680",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-07T13:31:24.884895+07:00"
+    },
+    {
+      "id": "note_1794048091_4512",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-07T17:41:31.350085+07:00"
+    }
+  ],
+  "active_note_id": "note_1794048091_4512",
+  "countdowns": [
+    {
+      "id": "cd_1793724718_5595",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-03T23:51:58.600042+07:00"
+    },
+    {
+      "id": "cd_1793724837_3712",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-03T23:53:57.528332+07:00"
+    },
+    {
+      "id": "cd_1793724913_9717",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-03T23:55:13.311045+07:00"
+    },
+    {
+      "id": "cd_1793768754_5193",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-04T12:05:54.925509+07:00"
+    },
+    {
+      "id": "cd_1793768907_3898",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-04T12:08:27.944472+07:00"
+    },
+    {
+      "id": "cd_1793768925_8982",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-04T12:08:45.498051+07:00"
+    },
+    {
+      "id": "cd_1793768947_8497",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-04T12:09:07.011749+07:00"
+    },
+    {
+      "id": "cd_1793769472_3662",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-04T12:17:52.761010+07:00"
+    },
+    {
+      "id": "cd_1793787573_4516",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-04T17:19:33.257091+07:00"
+    },
+    {
+      "id": "cd_1793787634_5129",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-04T17:20:34.330434+07:00"
+    },
+    {
+      "id": "cd_1793787656_2563",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-04T17:20:56.767167+07:00"
+    },
+    {
+      "id": "cd_1793789092_4144",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-04T17:44:52.492680+07:00"
+    },
+    {
+      "id": "cd_1793789105_1554",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-04T17:45:05.803089+07:00"
+    },
+    {
+      "id": "cd_1793789444_1307",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-04T17:50:44.888055+07:00"
+    },
+    {
+      "id": "cd_1793790411_6205",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-04T18:06:51.683871+07:00"
+    },
+    {
+      "id": "cd_1793805179_1096",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-04T22:12:59.759319+07:00"
+    },
+    {
+      "id": "cd_1793805260_8165",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-04T22:14:20.404571+07:00"
+    },
+    {
+      "id": "cd_1793806302_1132",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-04T22:31:42.749924+07:00"
+    },
+    {
+      "id": "cd_1793806325_7050",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-04T22:32:05.007469+07:00"
+    },
+    {
+      "id": "cd_1793865690_1462",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-05T15:01:30.438057+07:00"
+    },
+    {
+      "id": "cd_1793866284_3315",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-05T15:11:24.440410+07:00"
+    },
+    {
+      "id": "cd_1793866297_3503",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-05T15:11:37.461386+07:00"
+    },
+    {
+      "id": "cd_1793866501_7805",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-05T15:15:01.224732+07:00"
+    },
+    {
+      "id": "cd_1793869587_4888",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-05T16:06:27.626425+07:00"
+    },
+    {
+      "id": "cd_1794033084_1261",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-07T13:31:24.887014+07:00"
+    },
+    {
+      "id": "cd_1794048091_4962",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-07T17:41:31.351127+07:00"
+    }
+  ],
+  "active_countdown_id": "cd_1794048091_4962"
+}
