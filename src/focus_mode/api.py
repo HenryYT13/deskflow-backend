@@ -202,7 +202,7 @@ async def cors_middleware(request: web.Request, handler):
         resp = web.Response(status=204)
         if allow_origin:
             resp.headers["Access-Control-Allow-Origin"] = allow_origin
-            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, OPTIONS"
             resp.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, Accept"
             resp.headers["Access-Control-Max-Age"] = "86400"
             resp.headers["Vary"] = "Origin"
@@ -237,7 +237,7 @@ async def cors_middleware(request: web.Request, handler):
 
     if allow_origin and response is not None:
         response.headers["Access-Control-Allow-Origin"] = allow_origin
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, Accept"
         response.headers["Vary"] = "Origin"
 
@@ -411,6 +411,28 @@ class FocusApiHandler:
             "revoked": revoked
         })
 
+    async def handle_device_patch(self, request: web.Request) -> web.Response:
+        """PATCH /api/devices/{device_id} {"name": "..."} - authenticated rename."""
+        await self._authenticate(request)
+        data = await self._parse_json(request)
+        target_id = request.match_info.get("device_id", "")
+        name = data.get("name")
+        if not isinstance(name, str):
+            return error_response("name_required", status=400)
+        name = " ".join(name.split())
+        if not name:
+            return error_response("name_required", status=400)
+        if len(name) > 64:
+            return error_response("name_too_long", status=400)
+        if not await self.service.rename_device(target_id, name):
+            return error_response("device_not_found", status=404)
+        try:
+            from station_control import station_control
+            station_control.rename_device(target_id, name)
+        except Exception:
+            pass
+        return web.json_response({"success": True, "device_id": target_id, "device_name": name})
+
     async def handle_device_rename(self, request: web.Request) -> web.Response:
         try:
             current_device = await self._authenticate(request)
@@ -439,6 +461,9 @@ def create_app(service: FocusService) -> web.Application:
     app = web.Application(client_max_size=16384, middlewares=[host_validation_middleware, cors_middleware])
     handler = FocusApiHandler(service)
 
+    async def options_handler(request: web.Request) -> web.Response:
+        return web.Response(status=204)
+
     app.router.add_post("/api/focus/pair", handler.handle_pair)
     app.router.add_get("/api/focus/status", handler.handle_status)
     app.router.add_get("/api/focus/session", handler.handle_session)
@@ -450,10 +475,9 @@ def create_app(service: FocusService) -> web.Application:
     app.router.add_get("/api/focus/devices", handler.handle_devices)
     app.router.add_post("/api/focus/devices/rename", handler.handle_device_rename)
     app.router.add_post("/api/focus/devices/{device_id}/rename", handler.handle_device_rename)
+    app.router.add_patch("/api/devices/{device_id}", handler.handle_device_patch)
+    app.router.add_route("OPTIONS", "/api/devices/{tail:.*}", options_handler)
     app.router.add_post("/api/focus/unpair", handler.handle_unpair)
-
-    async def options_handler(request: web.Request) -> web.Response:
-        return web.Response(status=204)
 
     # Preflight options route
     app.router.add_route("OPTIONS", "/api/focus/{tail:.*}", options_handler)
