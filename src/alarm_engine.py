@@ -249,6 +249,17 @@ class AlarmEngine:
             logger.info(f"[AlarmEngine] Morse playback dispatched: {len(cleaned_pattern)} symbols, unit={unit}ms")
             return {"success": True, "pattern": cleaned_pattern, "unit_ms": unit, "freq": frequency}
 
+    async def play_melody(self) -> Dict[str, Any]:
+        """Asks the ESP32 to play its built-in MIDI melody on the buzzer."""
+        async with self._lock:
+            self._publish_alarm_mqtt({"action": "melody_play"})
+            return {"success": True}
+
+    async def stop_melody(self) -> Dict[str, Any]:
+        async with self._lock:
+            self._publish_alarm_mqtt({"action": "melody_stop"})
+            return {"success": True}
+
     async def stop_morse(self) -> Dict[str, Any]:
         """Stops any active Morse code playback immediately."""
         async with self._lock:
