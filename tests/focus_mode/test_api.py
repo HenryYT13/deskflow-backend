@@ -361,6 +361,47 @@ class TestFocusApi(AioHTTPTestCase):
         data = await resp.json()
         self.assertEqual(data["error"]["code"], "too_large")
 
+    async def test_pair_session_qr_flow(self):
+        # 1. Desktop requests a QR session
+        create_resp = await self.client.post("/api/focus/pair/session/create", json={"device_name": "Desktop PC", "platform": "linux"})
+        self.assertEqual(create_resp.status, 200)
+        create_data = await create_resp.json()
+        self.assertTrue(create_data["success"])
+        session_id = create_data["session_id"]
+        self.assertIn("deskflow://pair?session=", create_data["qr_payload"])
+
+        # 2. Check pending status
+        status_resp = await self.client.get(f"/api/focus/pair/session/{session_id}")
+        self.assertEqual(status_resp.status, 200)
+        status_data = await status_resp.json()
+        self.assertEqual(status_data["status"], "pending")
+
+        # 3. Mobile app approves session with custom name
+        mobile_token, _ = await self._pair_helper()
+        mobile_headers = {"Authorization": f"Bearer {mobile_token}", "Content-Type": "application/json"}
+        approve_resp = await self.client.post(
+            f"/api/focus/pair/session/{session_id}/approve",
+            headers=mobile_headers,
+            json={"device_name": "My Fedora Desktop", "platform": "linux"}
+        )
+        self.assertEqual(approve_resp.status, 200)
+        approve_data = await approve_resp.json()
+        self.assertTrue(approve_data["success"])
+
+        # 4. Desktop polling detects approval
+        poll_resp = await self.client.get(f"/api/focus/pair/session/{session_id}")
+        self.assertEqual(poll_resp.status, 200)
+        poll_data = await poll_resp.json()
+        self.assertEqual(poll_data["status"], "approved")
+        self.assertEqual(poll_data["device_name"], "My Fedora Desktop")
+        desktop_token = poll_data["device_token"]
+        self.assertTrue(desktop_token)
+
+        # 5. Verify the issued desktop token works
+        desktop_headers = {"Authorization": f"Bearer {desktop_token}"}
+        auth_check = await self.client.get("/api/focus/status", headers=desktop_headers)
+        self.assertEqual(auth_check.status, 200)
+
 
 if __name__ == "__main__":
     unittest.main()

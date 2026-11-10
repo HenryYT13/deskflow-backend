@@ -570,6 +570,18 @@ class FocusService:
             client_ip=client_ip
         )
 
+    async def register_authorized_device(
+        self,
+        device_name: str,
+        platform: str = "desktop",
+        scopes: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        return await self.auth.register_authorized_device(
+            device_name=device_name,
+            platform=platform,
+            scopes=scopes
+        )
+
     def get_paired_devices(self, current_device_id: Optional[str] = None) -> List[Dict[str, Any]]:
         state = self.storage.get_state()
         devices = state.get("devices", {})

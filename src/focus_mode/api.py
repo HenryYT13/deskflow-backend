@@ -18,6 +18,8 @@ Phase 7 implementation & Security Pass:
 import os
 import json
 import logging
+import secrets
+import time
 import urllib.parse
 from aiohttp import web
 from typing import Dict, Any, Optional, Set
@@ -247,6 +249,7 @@ async def cors_middleware(request: web.Request, handler):
 class FocusApiHandler:
     def __init__(self, service: FocusService):
         self.service = service
+        self.pair_sessions: Dict[str, Dict[str, Any]] = {}
 
     async def _parse_json(self, request: web.Request) -> Dict[str, Any]:
         try:
@@ -262,6 +265,112 @@ class FocusApiHandler:
     async def _authenticate(self, request: web.Request) -> Dict[str, Any]:
         auth_header = request.headers.get("Authorization")
         return await self.service.auth.authenticate_token(auth_header)
+
+    async def handle_pair_session_create(self, request: web.Request) -> web.Response:
+        now = time.time()
+        # Prune expired sessions (> 10 mins)
+        self.pair_sessions = {k: v for k, v in self.pair_sessions.items() if v.get("expires_at", 0) > now}
+
+        data = {}
+        try:
+            data = await self._parse_json(request)
+        except Exception:
+            pass
+
+        session_id = secrets.token_hex(16)
+        platform = data.get("platform", "desktop")
+        default_name = data.get("device_name", "DeskFlow Client")
+        server_url = str(request.url.origin)
+
+        self.pair_sessions[session_id] = {
+            "status": "pending",
+            "created_at": now,
+            "expires_at": now + 600,
+            "platform": platform,
+            "default_name": default_name,
+            "server_url": server_url
+        }
+
+        qr_payload = f"deskflow://pair?session={session_id}&server={server_url}&name={default_name}"
+        return web.json_response({
+            "success": True,
+            "session_id": session_id,
+            "qr_payload": qr_payload,
+            "expires_in": 600
+        })
+
+    async def handle_pair_session_status(self, request: web.Request) -> web.Response:
+        session_id = request.match_info.get("session_id", "").strip()
+        now = time.time()
+        sess = self.pair_sessions.get(session_id)
+        if not sess or sess.get("expires_at", 0) < now:
+            return error_response("session_not_found_or_expired", status=404)
+
+        status = sess.get("status", "pending")
+        if status == "approved":
+            return web.json_response({
+                "success": True,
+                "status": "approved",
+                "device_id": sess["device_id"],
+                "device_token": sess["device_token"],
+                "device_name": sess["device_name"],
+                "scopes": sess.get("scopes", ["focus", "control", "spotify"]),
+                "paired_at": sess.get("paired_at"),
+                "focus_active": self.service.get_public_status()["enabled"]
+            })
+        elif status == "rejected":
+            return web.json_response({
+                "success": True,
+                "status": "rejected"
+            })
+        else:
+            return web.json_response({
+                "success": True,
+                "status": "pending"
+            })
+
+    async def handle_pair_session_approve(self, request: web.Request) -> web.Response:
+        await self._authenticate(request)
+        session_id = request.match_info.get("session_id", "").strip()
+        now = time.time()
+        sess = self.pair_sessions.get(session_id)
+        if not sess or sess.get("expires_at", 0) < now:
+            return error_response("session_not_found_or_expired", status=404)
+
+        if sess.get("status") != "pending":
+            return error_response("session_already_processed", status=409)
+
+        data = await self._parse_json(request)
+        custom_name = data.get("device_name") or sess.get("default_name") or "DeskFlow Desktop"
+        platform = data.get("platform") or sess.get("platform") or "desktop"
+        scopes = data.get("scopes", ["focus", "control", "spotify"])
+
+        reg = await self.service.register_authorized_device(
+            device_name=str(custom_name),
+            platform=str(platform),
+            scopes=scopes
+        )
+
+        sess["status"] = "approved"
+        sess["device_id"] = reg["device_id"]
+        sess["device_token"] = reg["device_token"]
+        sess["device_name"] = reg["device_name"]
+        sess["scopes"] = reg["scopes"]
+        sess["paired_at"] = reg["paired_at"]
+
+        return web.json_response({
+            "success": True,
+            "device_id": reg["device_id"],
+            "device_name": reg["device_name"]
+        })
+
+    async def handle_pair_session_reject(self, request: web.Request) -> web.Response:
+        await self._authenticate(request)
+        session_id = request.match_info.get("session_id", "").strip()
+        sess = self.pair_sessions.get(session_id)
+        if sess:
+            sess["status"] = "rejected"
+        return web.json_response({"success": True})
 
     async def handle_pair(self, request: web.Request) -> web.Response:
         data = await self._parse_json(request)
@@ -467,6 +576,10 @@ def create_app(service: FocusService) -> web.Application:
         return web.Response(status=204)
 
     app.router.add_post("/api/focus/pair", handler.handle_pair)
+    app.router.add_post("/api/focus/pair/session/create", handler.handle_pair_session_create)
+    app.router.add_get("/api/focus/pair/session/{session_id}", handler.handle_pair_session_status)
+    app.router.add_post("/api/focus/pair/session/{session_id}/approve", handler.handle_pair_session_approve)
+    app.router.add_post("/api/focus/pair/session/{session_id}/reject", handler.handle_pair_session_reject)
     app.router.add_get("/api/focus/status", handler.handle_status)
     app.router.add_get("/api/focus/session", handler.handle_session)
     app.router.add_get("/api/focus/history", handler.handle_history)

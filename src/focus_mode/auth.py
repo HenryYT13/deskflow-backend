@@ -275,6 +275,52 @@ class FocusAuth:
             "paired_at": device_record["paired_at"]
         }
 
+    async def register_authorized_device(
+        self,
+        device_name: str,
+        platform: str = "desktop",
+        scopes: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """
+        Directly registers and issues a new device token for a verified/approved device.
+        Used by the QR Approval session flow where an already-authenticated device approves a new client.
+        """
+        raw_token = secrets.token_hex(32)
+        token_hmac = self.compute_hmac(raw_token)
+        device_id = f"dev_{uuid.uuid4().hex[:12]}"
+        now_dt = datetime.now(timezone.utc)
+        expires_at_dt = now_dt + timedelta(seconds=DEVICE_TOKEN_SLIDING_TTL_SECONDS)
+
+        device_record = {
+            "device_id": device_id,
+            "token_hmac": token_hmac,
+            "device_name": device_name.strip() or "DeskFlow Desktop",
+            "platform": platform.strip() or "desktop",
+            "paired_at": now_dt.isoformat(),
+            "last_seen_at": now_dt.isoformat(),
+            "expires_at": expires_at_dt.isoformat(),
+            "revoked": False,
+            "scopes": list(scopes) if scopes else ["focus", "control", "spotify"]
+        }
+
+        def _atomic_register(st: Dict[str, Any]) -> None:
+            if "devices" not in st:
+                st["devices"] = {}
+            st["devices"][device_id] = device_record
+
+        await self.storage.mutate(_atomic_register)
+        logger.info(f"[Auth] Device {device_id} registered via QR approval (platform: {platform}, scopes: {device_record['scopes']}).")
+
+        return {
+            "device_id": device_id,
+            "device_token": raw_token,
+            "device_name": device_record["device_name"],
+            "platform": device_record["platform"],
+            "scopes": device_record["scopes"],
+            "expires_at": expires_at_dt.isoformat(),
+            "paired_at": device_record["paired_at"]
+        }
+
     # --- Device Token Verification ---
     async def authenticate_token(self, auth_header: Optional[str]) -> Dict[str, Any]:
         """

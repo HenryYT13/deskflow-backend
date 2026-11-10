@@ -55,40 +55,30 @@ def setup_discord_commands(
             return False
         return True
 
-    @focus_group.command(name="on", description="Bật chế độ tập trung Focus Mode hoặc Pomodoro")
+    @focus_group.command(name="on", description="Bật chế độ tập trung Focus Mode")
     @app_commands.describe(
         duration="Thời gian tập trung (phút, mặc định 25)",
-        mode="Chế độ tập trung (Regular Focus hoặc Pomodoro)",
-        break_duration="Thời gian nghỉ Pomodoro (phút, mặc định 5)",
         reason="Mục tiêu bài học/công việc"
     )
-    @app_commands.choices(mode=[
-        app_commands.Choice(name="Regular Focus (Chặn tập trung thông thường)", value="focus"),
-        app_commands.Choice(name="Pomodoro (Chu kỳ Học/Nghỉ tự động)", value="pomodoro")
-    ])
     async def cmd_on(
         interaction: discord.Interaction,
         duration: Optional[int] = 25,
-        mode: Optional[app_commands.Choice[str]] = None,
-        break_duration: Optional[int] = 5,
         reason: Optional[str] = "Study Session"
     ):
         if not await _owner_check(interaction):
             return
         await interaction.response.defer(ephemeral=True)
         try:
-            chosen_mode = mode.value if mode else "focus"
             status = await service.start_session(
-                session_type=chosen_mode,
+                session_type="focus",
                 duration_minutes=duration or 25,
-                break_minutes=break_duration or 5,
+                break_minutes=0,
                 reason=reason or "Study Session"
             )
-            mode_label = "Pomodoro" if chosen_mode == "pomodoro" else "Regular Focus"
             rem_str = f"{status.get('remaining_seconds', 0) // 60}m" if status.get('remaining_seconds') else "Vô thời hạn"
             await interaction.followup.send(
-                f"🔒 **Focus Mode ({mode_label}) đã BẬT!**\n"
-                f"• Phase: `{status.get('phase', 'FOCUS')}` | Thời gian: `{rem_str}`\n"
+                f"🔒 **Focus Mode đã BẬT!**\n"
+                f"• Thời gian: `{rem_str}`\n"
                 f"• Mục tiêu: *{reason}*\n"
                 f"Tất cả các trang web gây xao nhãng sẽ bị chặn trên trình duyệt.",
                 ephemeral=True
@@ -301,4 +291,19 @@ def setup_discord_commands(
             await interaction.followup.send("❌ Có lỗi khi thu hồi thiết bị.", ephemeral=True)
 
     tree.add_command(focus_group)
+
+    @tree.command(name="focus_mode", description="[Đã chuyển sang /app] Vui lòng sử dụng /app")
+    async def legacy_focus_mode_cmd(interaction: discord.Interaction):
+        await interaction.response.send_message(
+            "ℹ️ Lệnh `/focus_mode` đã được đổi thành `/app`!\n"
+            "Vui lòng sử dụng các lệnh mới:\n"
+            "• `/app on` - Bật chế độ tập trung\n"
+            "• `/app off` - Tắt chế độ tập trung (giải toán)\n"
+            "• `/app answer` - Nộp đáp án thử thách\n"
+            "• `/app pair` - Tạo mã liên kết thiết bị\n"
+            "• `/app status` - Xem trạng thái\n"
+            "• `/app devices` - Danh sách thiết bị",
+            ephemeral=True
+        )
+
     return focus_group

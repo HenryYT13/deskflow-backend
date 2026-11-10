@@ -697,7 +697,7 @@ async def cmd_close_tkb(interaction: discord.Interaction):
     mqtt_publish_logged("deskflow/display", json.dumps({"action": "switch_view", "view": "main"}))
     await interaction.followup.send("🖥️ Đã đóng TKB, đưa màn hình về lại **Dashboard đồng hồ chính**.", ephemeral=True)
 
-@bot.tree.command(name="timer", description="Hẹn giờ tập trung Pomodoro học bài")
+@bot.tree.command(name="timer", description="Hẹn giờ tập trung học bài (Timer)")
 @app_commands.describe(duration="Thời gian đếm ngược (VD: 25m, 1h)", note="Mục tiêu bài học")
 async def cmd_timer(interaction: discord.Interaction, duration: str, note: str = "Tập trung học"):
     d_clean = duration.strip().lower()
@@ -705,7 +705,7 @@ async def cmd_timer(interaction: discord.Interaction, duration: str, note: str =
     payload = json.dumps({"action": "start_timer", "seconds": total_seconds, "label": duration, "note": clean_ascii(note)}, ensure_ascii=False)
     mqtt_publish_logged(config.TOPIC_TIMER, payload)
 
-    embed = discord.Embed(title="⏳ Bắt Đầu Chế Độ Pomodoro", color=0xE67E22)
+    embed = discord.Embed(title="⏳ Bắt Đầu Hẹn Giờ Tập Trung", color=0xE67E22)
     embed.add_field(name="Thời lượng", value=duration, inline=True)
     embed.add_field(name="Mục tiêu", value=note, inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
