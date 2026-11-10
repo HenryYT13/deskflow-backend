@@ -280,7 +280,9 @@ class FocusApiHandler:
         session_id = secrets.token_hex(16)
         platform = data.get("platform", "desktop")
         default_name = data.get("device_name", "DeskFlow Client")
-        server_url = str(request.url.origin)
+        proto = request.headers.get("X-Forwarded-Proto") or request.url.scheme
+        host = request.headers.get("Host") or request.url.host
+        server_url = f"{proto}://{host}"
 
         self.pair_sessions[session_id] = {
             "status": "pending",
