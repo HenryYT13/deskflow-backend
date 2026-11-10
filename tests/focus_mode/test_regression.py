@@ -41,7 +41,9 @@ class TestBackendRegression(unittest.TestCase):
         self.assertEqual(config.TOPIC_BATTERY_ALERT, "deskflow/battery_alert")
 
     def test_original_source_integrity(self):
-        main_py_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../_server_copy/src/main.py"))
+        main_py_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../src/main.py"))
+        if not os.path.exists(main_py_path):
+            main_py_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../_server_copy/src/main.py"))
         with open(main_py_path, "r", encoding="utf-8") as f:
             content = f.read()
 

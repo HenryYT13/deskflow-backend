@@ -17,7 +17,7 @@
       "20:00"
     ],
     "clock_style": "flip",
-    "hardware_config_version": 8,
+    "hardware_config_version": 12,
     "applied_by_station": false,
     "last_ack_error": null
   },
@@ -198,9 +198,33 @@
       "title": "Lam bai tap Toan",
       "content": "Lam bai tap Toan",
       "created_at": "2026-11-07T17:41:31.350085+07:00"
+    },
+    {
+      "id": "note_1794310274_9010",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-10T18:31:14.819207+07:00"
+    },
+    {
+      "id": "note_1794310289_1644",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-10T18:31:29.188578+07:00"
+    },
+    {
+      "id": "note_1794310349_1516",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-10T18:32:29.199486+07:00"
+    },
+    {
+      "id": "note_1794310368_1080",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-10T18:32:48.922980+07:00"
     }
   ],
-  "active_note_id": "note_1794048091_4512",
+  "active_note_id": "note_1794310368_1080",
   "countdowns": [
     {
       "id": "cd_1793724718_5595",
@@ -357,7 +381,33 @@
       "title": "Thi Hoc Ky",
       "target_date": "2026-12-25T00:00:00+07:00",
       "created_at": "2026-11-07T17:41:31.351127+07:00"
+    },
+    {
+      "id": "cd_1794310274_5924",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-10T18:31:14.822020+07:00"
+    },
+    {
+      "id": "cd_1794310289_5882",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-10T18:31:29.191422+07:00"
+    },
+    {
+      "id": "cd_1794310349_9325",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-10T18:32:29.201802+07:00"
+    },
+    {
+      "id": "cd_1794310368_2979",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-10T18:32:48.925131+07:00"
     }
   ],
-  "active_countdown_id": "cd_1794048091_4962"
+  "active_countdown_id": "cd_1794310368_2979",
+  "alarms": [],
+  "selected_display_device_id": null
 }

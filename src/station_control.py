@@ -118,7 +118,9 @@ def parse_strict_darkmode_mode(val: Any) -> str:
         return "always_on"
     if v in ("off", "light"):
         return "off"
-    if v in ("custom", "scheduled", "sync", "auto"):
+    if v == "custom":
+        return "custom"
+    if v in ("scheduled", "sync", "auto"):
         return "scheduled"
     raise ValueError(f"darkmode_mode must be one of 'off', 'always_on', 'custom', 'scheduled', 'dark', 'light', 'sync' (got '{val}')")
 

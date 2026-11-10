@@ -404,6 +404,8 @@ class FocusApiHandler:
                 data = {}
 
         target_device_id = data.get("device_id") or current_device.get("device_id")
+        if target_device_id != current_device.get("device_id"):
+            return error_response("forbidden", status=403)
         revoked = await self.service.unpair_device(target_device_id)
         return web.json_response({
             "success": True,
