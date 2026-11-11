@@ -22,10 +22,17 @@ def _read_vlq(data: bytes, p: int) -> Tuple[int, int]:
             break
     return val, p
 
-def parse_midi_bytes(midi_bytes: bytes, max_notes: int = 512) -> List[List[int]]:
+def parse_midi_bytes(
+    midi_bytes: bytes,
+    max_notes: int = 512,
+    auto_transpose: bool = True,
+    filter_bass: bool = True
+) -> List[List[int]]:
     """
     Parses SMF Format 0 or Format 1 binary bytes into monophonic [[freq_hz, duration_ms], ...].
     Multi-voice/polyphonic chords are automatically reduced to the highest melody pitch.
+    Accompaniment basslines and out-of-range low frequencies are filtered and transposed
+    to match the resonant frequency response of piezoelectric buzzers (400 Hz - 2500 Hz).
     """
     if len(midi_bytes) < 14 or midi_bytes[:4] != b"MThd":
         raise ValueError("Invalid MIDI file: Missing 'MThd' header.")
@@ -100,6 +107,18 @@ def parse_midi_bytes(midi_bytes: bytes, max_notes: int = 512) -> List[List[int]]
     events.sort(key=lambda x: x[0])
     tempo_changes.sort(key=lambda x: x[0])
 
+    # Filter out deep accompaniment bass notes when upper melody exists
+    # (Prevents low bass accompaniment from overwriting melodic rests/silences)
+    note_on_keys = sorted([e[2] for e in events if e[1]])
+    if filter_bass and note_on_keys:
+        q75 = note_on_keys[int(len(note_on_keys) * 0.75)]
+        min_k = note_on_keys[0]
+        if q75 >= 52 and min_k < 42:
+            bass_floor = 48
+            filtered = [e for e in events if e[2] >= bass_floor]
+            if filtered:
+                events = filtered
+
     def tick_to_ms(target_tick: int) -> int:
         cur_ms = 0.0
         cur_t = 0
@@ -114,9 +133,9 @@ def parse_midi_bytes(midi_bytes: bytes, max_notes: int = 512) -> List[List[int]]
         return int(round(cur_ms))
 
     active_notes: List[int] = []
-    notes_out: List[List[int]] = []
+    raw_notes: List[Tuple[int, int]] = []
     last_ms = 0
-    current_freq = 0
+    cur_pitch = 0
 
     for tick, is_on, key in events:
         now_ms = tick_to_ms(tick)
@@ -128,16 +147,41 @@ def parse_midi_bytes(midi_bytes: bytes, max_notes: int = 512) -> List[List[int]]
             if key in active_notes:
                 active_notes.remove(key)
 
-        new_note = max(active_notes) if active_notes else 0
-        new_freq = midi_note_to_freq(new_note) if new_note > 0 else 0
-
-        if new_freq != current_freq:
+        new_pitch = max(active_notes) if active_notes else 0
+        if new_pitch != cur_pitch:
             if dur >= 20: # Debounce tiny transitions
-                notes_out.append([current_freq, dur])
+                raw_notes.append((cur_pitch, dur))
                 last_ms = now_ms
-                if len(notes_out) >= max_notes:
+                if len(raw_notes) >= max_notes:
                     break
-            current_freq = new_freq
+            cur_pitch = new_pitch
+
+    # Auto-transposition to buzzer resonant sweet spot (~400 Hz - 2500 Hz, MIDI 58 - 88)
+    shift = 0
+    if auto_transpose:
+        mel_keys = sorted([k for k, d in raw_notes if k > 0])
+        if mel_keys:
+            med_k = mel_keys[len(mel_keys) // 2]
+            while med_k + shift < 58:
+                shift += 12
+            while med_k + shift > 88:
+                shift -= 12
+
+    notes_out: List[List[int]] = []
+    for k, d in raw_notes:
+        freq = midi_note_to_freq(k + shift) if k > 0 else 0
+        notes_out.append([freq, d])
+
+    # Trim excessive leading silence so playback starts promptly
+    if notes_out and notes_out[0][0] == 0:
+        if notes_out[0][1] > 200:
+            notes_out[0][1] = 50
+        elif notes_out[0][1] <= 20:
+            notes_out.pop(0)
+
+    # Trim trailing silence
+    if notes_out and notes_out[-1][0] == 0:
+        notes_out.pop()
 
     return notes_out
 
