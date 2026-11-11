@@ -249,16 +249,22 @@ class AlarmEngine:
             logger.info(f"[AlarmEngine] Morse playback dispatched: {len(cleaned_pattern)} symbols, unit={unit}ms")
             return {"success": True, "pattern": cleaned_pattern, "unit_ms": unit, "freq": frequency}
 
-    async def play_melody(self) -> Dict[str, Any]:
-        """Asks the ESP32 to play its built-in MIDI melody on the buzzer."""
+    async def play_melody(self, notes: Optional[List[List[int]]] = None, title: str = "Melody") -> Dict[str, Any]:
+        """Asks the ESP32 to play a MIDI melody on the buzzer."""
         async with self._lock:
-            self._publish_alarm_mqtt({"action": "melody_play"})
-            return {"success": True}
+            payload: Dict[str, Any] = {"action": "melody_play", "title": title}
+            if notes:
+                payload["notes"] = notes
+            self._publish_alarm_mqtt(payload)
+            logger.info(f"[AlarmEngine] Melody play dispatched: '{title}' ({len(notes) if notes else 'builtin'} notes)")
+            return {"success": True, "title": title, "note_count": len(notes) if notes else 0}
 
     async def stop_melody(self) -> Dict[str, Any]:
+        """Stops active buzzer melody playback immediately."""
         async with self._lock:
             self._publish_alarm_mqtt({"action": "melody_stop"})
-            return {"success": True}
+            logger.info("[AlarmEngine] Melody stop dispatched.")
+            return {"success": True, "message": "Melody playback stopped."}
 
     async def stop_morse(self) -> Dict[str, Any]:
         """Stops any active Morse code playback immediately."""

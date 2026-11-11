@@ -1162,6 +1162,12 @@ class StationControlManager:
     async def stop_morse(self) -> Dict[str, Any]:
         return await alarm_engine.stop_morse()
 
+    async def play_melody(self, notes: Optional[List[List[int]]] = None, title: str = "Melody") -> Dict[str, Any]:
+        return await alarm_engine.play_melody(notes=notes, title=title)
+
+    async def stop_melody(self) -> Dict[str, Any]:
+        return await alarm_engine.stop_melody()
+
     def get_selected_display_device(self) -> Dict[str, Any]:
         with self._config_lock:
             return {

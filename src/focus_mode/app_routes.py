@@ -330,6 +330,70 @@ class AppApiHandler:
         res = await station_control.stop_morse()
         return web.json_response(res)
 
+    async def handle_melody_presets(self, request: web.Request) -> web.Response:
+        from midi_parser import get_preset_list
+        return web.json_response({"success": True, "presets": get_preset_list()})
+
+    async def handle_melody_play(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        data = await self._parse_json(request)
+        title = data.get("title", "Custom Melody")
+        notes = data.get("notes")
+        preset_id = data.get("preset_id")
+        midi_b64 = data.get("midi_base64")
+
+        if preset_id:
+            from midi_parser import get_preset
+            p = get_preset(str(preset_id))
+            if not p:
+                return error_response("preset_not_found", status=404)
+            title = p["title"]
+            notes = p["notes"]
+        elif midi_b64:
+            import base64
+            from midi_parser import parse_midi_bytes
+            try:
+                midi_bytes = base64.b64decode(midi_b64)
+                notes = parse_midi_bytes(midi_bytes)
+                if not title or title == "Custom Melody":
+                    title = data.get("filename", "MIDI Melody")
+            except Exception as e:
+                return error_response(f"invalid_midi: {str(e)}", status=400)
+        elif not notes or not isinstance(notes, list):
+            return error_response("missing_notes_or_preset", status=400)
+
+        res = await station_control.play_melody(notes=notes, title=title)
+        return web.json_response(res)
+
+    async def handle_melody_stop(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        res = await station_control.stop_melody()
+        return web.json_response(res)
+
+    async def handle_melody_upload(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        from midi_parser import parse_midi_bytes
+        try:
+            if request.content_type.startswith("multipart/"):
+                reader = await request.multipart()
+                field = await reader.next()
+                if not field:
+                    return error_response("no_file_uploaded", status=400)
+                filename = field.filename or "Uploaded.mid"
+                content = await field.read()
+            else:
+                content = await request.read()
+                filename = request.headers.get("X-Filename", "Uploaded.mid")
+
+            notes = parse_midi_bytes(content)
+            title = filename.rsplit(".", 1)[0]
+            res = await station_control.play_melody(notes=notes, title=title)
+            res["filename"] = filename
+            res["note_count"] = len(notes)
+            return web.json_response(res)
+        except Exception as e:
+            return error_response(f"midi_parse_error: {str(e)}", status=400)
+
     async def handle_alarm_schedule(self, request: web.Request) -> web.Response:
         await self._authenticate(request, required_scope="control")
         data = await self._parse_json(request)
@@ -805,6 +869,10 @@ def register_app_routes(app: web.Application, auth: FocusAuth) -> None:
     app.router.add_post("/api/app/control/alarm/schedule", handler.handle_alarm_schedule)
     app.router.add_post("/api/app/control/morse/play", handler.handle_morse_play)
     app.router.add_post("/api/app/control/morse/stop", handler.handle_morse_stop)
+    app.router.add_get("/api/app/control/melody/presets", handler.handle_melody_presets)
+    app.router.add_post("/api/app/control/melody/play", handler.handle_melody_play)
+    app.router.add_post("/api/app/control/melody/upload", handler.handle_melody_upload)
+    app.router.add_post("/api/app/control/melody/stop", handler.handle_melody_stop)
 
     # Persistent Alarms
     app.router.add_get("/api/app/control/alarms", handler.handle_alarms_get)

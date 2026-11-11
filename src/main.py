@@ -1110,6 +1110,55 @@ async def cmd_led(interaction: discord.Interaction, action: app_commands.Choice[
     mqtt_publish_logged("deskflow/display", json.dumps(payload))
     await interaction.followup.send(f"💡 Đã gửi lệnh điều khiển LED: **{action.name}**!", ephemeral=True)
 
+@bot.tree.command(name="melody", description="Phát nhạc MIDI / Chiptune 8-bit qua còi Buzzer trên trạm ESP32")
+@app_commands.describe(
+    song="Chọn bài hát mẫu hoặc Dừng phát",
+    midi_file="Đính kèm file .mid từ máy tính / điện thoại để phát qua còi ESP32"
+)
+@app_commands.choices(song=[
+    app_commands.Choice(name="Super Mario Bros Theme", value="mario"),
+    app_commands.Choice(name="Never Gonna Give You Up (Rickroll)", value="rickroll"),
+    app_commands.Choice(name="Tetris Theme (Korobeiniki)", value="tetris"),
+    app_commands.Choice(name="Astronomia (Coffin Dance)", value="coffin"),
+    app_commands.Choice(name="Star Wars - Imperial March", value="starwars"),
+    app_commands.Choice(name="Nokia Tune", value="nokia"),
+    app_commands.Choice(name="⏹ Dừng phát nhạc (Stop)", value="stop")
+])
+async def cmd_melody(
+    interaction: discord.Interaction,
+    song: Optional[app_commands.Choice[str]] = None,
+    midi_file: Optional[discord.Attachment] = None
+):
+    await interaction.response.defer(ephemeral=True)
+    if song and song.value == "stop":
+        await station_control.stop_melody()
+        await interaction.followup.send("⏹ Đã dừng phát nhạc trên còi ESP32!", ephemeral=True)
+        return
+
+    from midi_parser import get_preset, parse_midi_bytes
+    if midi_file:
+        if not (midi_file.filename.endswith(".mid") or midi_file.filename.endswith(".midi")):
+            await interaction.followup.send("❌ Vui lòng đính kèm file định dạng `.mid` hoặc `.midi`!", ephemeral=True)
+            return
+        data = await midi_file.read()
+        try:
+            notes = parse_midi_bytes(data)
+            title = midi_file.filename.rsplit(".", 1)[0]
+            await station_control.play_melody(notes=notes, title=title)
+            await interaction.followup.send(f"🎵 Đang phát file MIDI: **{title}** ({len(notes)} nốt) trên còi ESP32!", ephemeral=True)
+            return
+        except Exception as e:
+            await interaction.followup.send(f"❌ Không thể giải mã file MIDI: {e}", ephemeral=True)
+            return
+
+    chosen = song.value if song else "mario"
+    p = get_preset(chosen)
+    if not p:
+        await interaction.followup.send("❌ Không tìm thấy bài hát!", ephemeral=True)
+        return
+    await station_control.play_melody(notes=p["notes"], title=p["title"])
+    await interaction.followup.send(f"🎵 Đang phát bài: **{p['title']}** ({len(p['notes'])} nốt) trên còi ESP32!", ephemeral=True)
+
 if __name__ == "__main__":
     spotify_service.init_spotify()
     token = getattr(config, "DISCORD_TOKEN", None) or getattr(config, "DISCORD_BOT_TOKEN", None)
