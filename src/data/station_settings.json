@@ -17,7 +17,7 @@
       "20:00"
     ],
     "clock_style": "flip",
-    "hardware_config_version": 12,
+    "hardware_config_version": 15,
     "applied_by_station": false,
     "last_ack_error": null
   },
@@ -222,9 +222,27 @@
       "title": "Lam bai tap Toan",
       "content": "Lam bai tap Toan",
       "created_at": "2026-11-10T18:32:48.922980+07:00"
+    },
+    {
+      "id": "note_1794406049_4620",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-11T21:07:29.368921+07:00"
+    },
+    {
+      "id": "note_1794406115_4926",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-11T21:08:35.303193+07:00"
+    },
+    {
+      "id": "note_1794406131_5715",
+      "title": "Lam bai tap Toan",
+      "content": "Lam bai tap Toan",
+      "created_at": "2026-11-11T21:08:51.304389+07:00"
     }
   ],
-  "active_note_id": "note_1794310368_1080",
+  "active_note_id": "note_1794406131_5715",
   "countdowns": [
     {
       "id": "cd_1793724718_5595",
@@ -405,9 +423,27 @@
       "title": "Thi Hoc Ky",
       "target_date": "2026-12-25T00:00:00+07:00",
       "created_at": "2026-11-10T18:32:48.925131+07:00"
+    },
+    {
+      "id": "cd_1794406049_1267",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-11T21:07:29.375330+07:00"
+    },
+    {
+      "id": "cd_1794406115_7759",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-11T21:08:35.309498+07:00"
+    },
+    {
+      "id": "cd_1794406131_1405",
+      "title": "Thi Hoc Ky",
+      "target_date": "2026-12-25T00:00:00+07:00",
+      "created_at": "2026-11-11T21:08:51.311078+07:00"
     }
   ],
-  "active_countdown_id": "cd_1794310368_2979",
+  "active_countdown_id": "cd_1794406131_1405",
   "alarms": [],
   "selected_display_device_id": null
 }

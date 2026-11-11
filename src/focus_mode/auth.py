@@ -159,7 +159,7 @@ class FocusAuth:
 
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=PAIR_CODE_TTL_SECONDS)
         expires_at_iso = expires_at.isoformat()
-        assigned_scopes = list(scopes) if scopes else ["focus"]
+        assigned_scopes = list(scopes) if scopes else ["focus", "control", "spotify"]
 
         def _mutator(state: Dict[str, Any]) -> None:
             if "pair_codes" not in state:
@@ -399,6 +399,19 @@ class FocusAuth:
             nonlocal found
             if "devices" in st and device_id in st["devices"]:
                 st["devices"][device_id]["revoked"] = True
+                found = True
+
+        await self.storage.mutate(_mutator)
+        return found
+
+    async def delete_device(self, device_id: str) -> bool:
+        """Permanently deletes a device from storage."""
+        found = False
+
+        def _mutator(st: Dict[str, Any]) -> None:
+            nonlocal found
+            if "devices" in st and device_id in st["devices"]:
+                del st["devices"][device_id]
                 found = True
 
         await self.storage.mutate(_mutator)

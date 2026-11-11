@@ -621,7 +621,11 @@ class StationControlManager:
         if led is not None:
             led_val = max(0, min(100, int(led)))
             payload["led_bright"] = led_val
+            payload["led_brightness"] = led_val
             res["led_bright"] = led_val
+            with self._config_lock:
+                self.device_settings["led_brightness"] = led_val
+                self._save_settings()
         if screen is not None:
             screen_val = max(0, min(100, int(screen)))
             payload["screen_bright"] = screen_val

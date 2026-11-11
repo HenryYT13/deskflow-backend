@@ -601,7 +601,11 @@ class FocusService:
         return result
 
     async def unpair_device(self, target_device_id: str) -> bool:
-        return await self.auth.revoke_device(target_device_id)
+        await self.auth.revoke_device(target_device_id)
+        return await self.auth.delete_device(target_device_id)
+
+    async def delete_device(self, target_device_id: str) -> bool:
+        return await self.auth.delete_device(target_device_id)
 
     async def rename_device(self, target_device_id: str, new_name: str) -> bool:
         return await self.auth.rename_device(target_device_id, new_name)

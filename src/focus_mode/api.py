@@ -517,14 +517,30 @@ class FocusApiHandler:
         target_device_id = data.get("device_id") or current_device.get("device_id")
         if target_device_id != current_device.get("device_id"):
             caller_scopes = current_device.get("scopes") or []
-            # Only devices with 'control' scope are authorized to revoke/unpair other devices
-            if "control" not in caller_scopes:
+            # Authenticated devices with 'control' or 'focus' are authorized to revoke/unpair devices
+            if "control" not in caller_scopes and "focus" not in caller_scopes:
                 return error_response("forbidden", status=403)
         revoked = await self.service.unpair_device(target_device_id)
         return web.json_response({
             "success": True,
             "device_id": target_device_id,
             "revoked": revoked
+        })
+
+    async def handle_device_delete(self, request: web.Request) -> web.Response:
+        current_device = await self._authenticate(request)
+        target_device_id = request.match_info.get("device_id") or request.query.get("device_id")
+        if not target_device_id:
+            return error_response("device_id_required", status=400)
+        caller_scopes = current_device.get("scopes") or []
+        if target_device_id != current_device.get("device_id"):
+            if "control" not in caller_scopes and "focus" not in caller_scopes:
+                return error_response("forbidden", status=403)
+        deleted = await self.service.delete_device(target_device_id)
+        return web.json_response({
+            "success": True,
+            "device_id": target_device_id,
+            "deleted": deleted
         })
 
     async def handle_device_patch(self, request: web.Request) -> web.Response:
@@ -596,6 +612,8 @@ def create_app(service: FocusService) -> web.Application:
     app.router.add_post("/api/focus/devices/rename", handler.handle_device_rename)
     app.router.add_post("/api/focus/devices/{device_id}/rename", handler.handle_device_rename)
     app.router.add_patch("/api/devices/{device_id}", handler.handle_device_patch)
+    app.router.add_delete("/api/focus/devices/{device_id}", handler.handle_device_delete)
+    app.router.add_post("/api/focus/devices/{device_id}/delete", handler.handle_device_delete)
     app.router.add_route("OPTIONS", "/api/devices/{tail:.*}", options_handler)
     app.router.add_post("/api/focus/unpair", handler.handle_unpair)
 

@@ -339,7 +339,7 @@ class AppApiHandler:
         data = await self._parse_json(request)
         title = data.get("title", "Custom Melody")
         notes = data.get("notes")
-        preset_id = data.get("preset_id")
+        preset_id = data.get("preset_id") or data.get("song") or data.get("preset")
         midi_b64 = data.get("midi_base64")
 
         if preset_id:
