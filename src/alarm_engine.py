@@ -11,7 +11,7 @@ import asyncio
 import logging
 import paho.mqtt.client as mqtt
 from dataclasses import dataclass, asdict
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger("DeskFlow.AlarmEngine")
 
