@@ -29,7 +29,7 @@ logger = logging.getLogger("DeskFlow.FocusMode.Auth")
 PAIR_CODE_TTL_SECONDS = 600  # 10 minutes
 DEVICE_TOKEN_SLIDING_TTL_SECONDS = 30 * 86400  # 30 days
 PAIR_RATE_LIMIT = 5  # attempts per minute
-DEVICE_RATE_LIMIT = 60  # requests per minute
+DEVICE_RATE_LIMIT = int(os.environ.get("DEVICE_RATE_LIMIT", "1200"))  # requests per minute (allow smooth slider dimming)
 
 
 def get_current_utc_iso() -> str:

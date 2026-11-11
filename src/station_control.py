@@ -625,7 +625,15 @@ class StationControlManager:
             res["led_bright"] = led_val
             with self._config_lock:
                 self.device_settings["led_brightness"] = led_val
-                self._save_settings()
+                # Debounce disk write by 1.0s so rapid slider dragging doesn't thrash flash/disk
+                if getattr(self, "_settings_save_timer", None):
+                    try:
+                        self._settings_save_timer.cancel()
+                    except Exception:
+                        pass
+                self._settings_save_timer = threading.Timer(1.0, self._save_settings)
+                self._settings_save_timer.daemon = True
+                self._settings_save_timer.start()
         if screen is not None:
             screen_val = max(0, min(100, int(round(float(screen)))))
             payload["screen_bright"] = screen_val
