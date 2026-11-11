@@ -736,16 +736,15 @@ async def cmd_ki_thi(interaction: discord.Interaction, ten_ky_thi: str, ngay_thi
 
 # --- 2. NHÓM ĐÈN LED & MÀN HÌNH ---
 
-@bot.tree.command(name="lamp_color", description="Đổi màu vòng LED WS2812B theo mã HEX (VD: #5865F2)")
-@app_commands.describe(hex="Mã màu HEX (VD: #FF0000, #38BDF8)")
+@bot.tree.command(name="lamp_color", description="Đổi màu vòng LED WS2812B theo mã HEX bất kỳ (VD: #FF00FF, #38BDF8, #F00, red)")
+@app_commands.describe(hex="Mã màu HEX bất kỳ (VD: #FF0000, #38BDF8, #F00) hoặc tên màu (red, cyan, warm)")
 async def cmd_lamp_color(interaction: discord.Interaction, hex: str):
     await interaction.response.defer(ephemeral=True)
-    h = hex.strip()
-    if not h.startswith("#"):
-        h = "#" + h
-    payload = {"action": "led_color", "hex": h}
-    mqtt_publish_logged("deskflow/display", json.dumps(payload))
-    await interaction.followup.send(f"🎨 Đã chuyển màu đèn sang mã: `{h}`", ephemeral=True)
+    try:
+        res = station_control.set_lamp_color(hex)
+        await interaction.followup.send(f"🎨 Đã chuyển màu đèn sang mã: `{res['hex']}`", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Mã màu không hợp lệ: `{e}`", ephemeral=True)
 
 @bot.tree.command(name="lamp_dim", description="Điều chỉnh độ sáng cho vòng LED và đèn nền màn hình ST7789 qua PWM")
 @app_commands.describe(led="Độ sáng vòng LED (0-100%)", screen="Độ sáng màn hình ST7789 (0-100%)")

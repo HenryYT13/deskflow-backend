@@ -579,13 +579,41 @@ class StationControlManager:
         return self.switch_view("main")
 
     def set_lamp_color(self, hex_color: str) -> Dict[str, Any]:
-        h = hex_color.strip()
-        if not h.startswith("#"):
+        """
+        Sets the WS2812B NeoPixel LED lamp color. Accepts any arbitrary hex format:
+        #RRGGBB, RRGGBB, #RGB, 0xRRGGBB, 8-char #AARRGGBB, or named colors (red, cyan, etc.).
+        """
+        h = str(hex_color).strip()
+        if h.startswith("0x") or h.startswith("0X"):
+            h = "#" + h[2:]
+        elif not h.startswith("#"):
             h = "#" + h
-        if len(h) != 7:
-            raise ValueError("Hex color must be 7 characters (e.g. #FF0000).")
-        self.mqtt_publish("deskflow/display", json.dumps({"action": "led_color", "hex": h}))
-        return {"success": True, "hex": h}
+
+        clean = h[1:].strip()
+        NAMED_COLORS = {
+            "red": "FF0000", "green": "00FF00", "blue": "0000FF",
+            "white": "FFFFFF", "yellow": "FFFF00", "cyan": "00FFFF",
+            "magenta": "FF00FF", "pink": "FF69B4", "orange": "FFA500",
+            "purple": "8B5CF6", "amber": "F59E0B", "emerald": "10B981",
+            "warm": "FFC58F", "cool": "C8DCFF"
+        }
+        if clean.lower() in NAMED_COLORS:
+            clean = NAMED_COLORS[clean.lower()]
+        elif len(clean) == 3:
+            clean = "".join(c * 2 for c in clean)
+        elif len(clean) == 8:
+            clean = clean[2:]  # Strip alpha channel from #AARRGGBB
+
+        try:
+            int(clean, 16)
+            if len(clean) != 6:
+                raise ValueError()
+        except ValueError:
+            raise ValueError(f"Invalid hex color '{hex_color}'. Use any #RRGGBB (e.g. #FF5500).")
+
+        normalized = f"#{clean.upper()}"
+        self.mqtt_publish("deskflow/display", json.dumps({"action": "led_color", "hex": normalized}))
+        return {"success": True, "hex": normalized}
 
     def set_lamp_dim(self, led: Optional[int] = None, screen: Optional[int] = None) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"action": "dim"}

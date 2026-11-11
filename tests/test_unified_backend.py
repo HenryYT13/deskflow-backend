@@ -128,10 +128,30 @@ class TestStationControl(unittest.IsolatedAsyncioTestCase):
             self.mgr.switch_view("invalid_screen")
 
     def test_lamp_controls(self):
-        # Color
+        # Color - standard
         res_color = self.mgr.set_lamp_color("#FF5500")
         self.assertTrue(res_color["success"])
         self.assertEqual(res_color["hex"], "#FF5500")
+
+        # Color - shorthand #F00 -> #FF0000
+        res_short = self.mgr.set_lamp_color("#F00")
+        self.assertEqual(res_short["hex"], "#FF0000")
+
+        # Color - 8-character ARGB #FFFF5500
+        res_argb = self.mgr.set_lamp_color("#FFFF5500")
+        self.assertEqual(res_argb["hex"], "#FF5500")
+
+        # Color - named color 'cyan'
+        res_name = self.mgr.set_lamp_color("cyan")
+        self.assertEqual(res_name["hex"], "#00FFFF")
+
+        # Color - without #
+        res_no_hash = self.mgr.set_lamp_color("10b981")
+        self.assertEqual(res_no_hash["hex"], "#10B981")
+
+        # Invalid color
+        with self.assertRaises(ValueError):
+            self.mgr.set_lamp_color("not_a_color")
 
         # Dim
         res_dim = self.mgr.set_lamp_dim(led=50, screen=80)
