@@ -284,22 +284,84 @@ class FocusApiHandler:
         host = request.headers.get("Host") or request.url.host
         server_url = f"{proto}://{host}"
 
+        qr_payload = f"deskflow://pair?session={session_id}&server={server_url}&name={default_name}&platform={platform}"
+        qr_image_url = f"{server_url}/api/focus/pair/session/{session_id}/qr.png"
+        qr_data_url = None
+        qr_png_bytes = None
+
+        try:
+            import qrcode
+            import io
+            import base64
+            qr = qrcode.QRCode(box_size=6, border=2)
+            qr.add_data(qr_payload)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="black", back_color="white")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            qr_png_bytes = buf.getvalue()
+            b64 = base64.b64encode(qr_png_bytes).decode("ascii")
+            qr_data_url = f"data:image/png;base64,{b64}"
+        except Exception as e:
+            logger.warning(f"[FocusApi] Failed to generate in-memory QR: {e}")
+
         self.pair_sessions[session_id] = {
             "status": "pending",
             "created_at": now,
             "expires_at": now + 600,
             "platform": platform,
             "default_name": default_name,
-            "server_url": server_url
+            "server_url": server_url,
+            "qr_payload": qr_payload,
+            "qr_png_bytes": qr_png_bytes,
+            "qr_data_url": qr_data_url,
+            "qr_image_url": qr_image_url
         }
 
-        qr_payload = f"deskflow://pair?session={session_id}&server={server_url}&name={default_name}&platform={platform}"
         return web.json_response({
             "success": True,
             "session_id": session_id,
             "qr_payload": qr_payload,
+            "qr_image_url": qr_image_url,
+            "qr_data_url": qr_data_url,
             "expires_in": 600
         })
+
+    async def handle_pair_session_qr(self, request: web.Request) -> web.Response:
+        session_id = request.match_info.get("session_id", "").strip()
+        now = time.time()
+        sess = self.pair_sessions.get(session_id)
+        if not sess or sess.get("expires_at", 0) < now:
+            return error_response("session_not_found_or_expired", status=404)
+
+        png_bytes = sess.get("qr_png_bytes")
+        if not png_bytes and sess.get("qr_payload"):
+            try:
+                import qrcode
+                import io
+                qr = qrcode.QRCode(box_size=6, border=2)
+                qr.add_data(sess["qr_payload"])
+                qr.make(fit=True)
+                img = qr.make_image(fill_color="black", back_color="white")
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                png_bytes = buf.getvalue()
+                sess["qr_png_bytes"] = png_bytes
+            except Exception as e:
+                logger.error(f"[FocusApi] QR generation error: {e}")
+                png_bytes = None
+
+        if not png_bytes:
+            return error_response("qr_generation_failed", status=500)
+
+        return web.Response(
+            body=png_bytes,
+            content_type="image/png",
+            headers={
+                "Cache-Control": "public, max-age=600",
+                "Access-Control-Allow-Origin": "*"
+            }
+        )
 
     async def handle_pair_session_status(self, request: web.Request) -> web.Response:
         session_id = request.match_info.get("session_id", "").strip()
@@ -599,6 +661,8 @@ def create_app(service: FocusService) -> web.Application:
     app.router.add_post("/api/focus/pair", handler.handle_pair)
     app.router.add_post("/api/focus/pair/session/create", handler.handle_pair_session_create)
     app.router.add_get("/api/focus/pair/session/{session_id}", handler.handle_pair_session_status)
+    app.router.add_get("/api/focus/pair/session/{session_id}/qr.png", handler.handle_pair_session_qr)
+    app.router.add_get("/api/focus/pair/session/{session_id}/qr", handler.handle_pair_session_qr)
     app.router.add_post("/api/focus/pair/session/{session_id}/approve", handler.handle_pair_session_approve)
     app.router.add_post("/api/focus/pair/session/{session_id}/reject", handler.handle_pair_session_reject)
     app.router.add_get("/api/focus/status", handler.handle_status)

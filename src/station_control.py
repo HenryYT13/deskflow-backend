@@ -615,11 +615,11 @@ class StationControlManager:
         self.mqtt_publish("deskflow/display", json.dumps({"action": "led_color", "hex": normalized}))
         return {"success": True, "hex": normalized}
 
-    def set_lamp_dim(self, led: Optional[int] = None, screen: Optional[int] = None) -> Dict[str, Any]:
+    def set_lamp_dim(self, led: Optional[Any] = None, screen: Optional[Any] = None) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"action": "dim"}
         res: Dict[str, Any] = {"success": True}
         if led is not None:
-            led_val = max(0, min(100, int(led)))
+            led_val = max(0, min(100, int(round(float(led)))))
             payload["led_bright"] = led_val
             payload["led_brightness"] = led_val
             res["led_bright"] = led_val
@@ -627,10 +627,13 @@ class StationControlManager:
                 self.device_settings["led_brightness"] = led_val
                 self._save_settings()
         if screen is not None:
-            screen_val = max(0, min(100, int(screen)))
+            screen_val = max(0, min(100, int(round(float(screen)))))
             payload["screen_bright"] = screen_val
+            payload["screen_brightness"] = screen_val
             res["screen_bright"] = screen_val
-        self.mqtt_publish("deskflow/display", json.dumps(payload))
+        msg = json.dumps(payload)
+        self.mqtt_publish("deskflow/display", msg)
+        self.mqtt_publish("deskflow/hardware", msg)
         return res
 
     def set_lamp_off(self) -> Dict[str, Any]:

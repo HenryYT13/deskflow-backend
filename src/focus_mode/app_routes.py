@@ -232,9 +232,9 @@ class AppApiHandler:
 
     # --- Lighting & LEDs ---
     async def handle_lamp_color(self, request: web.Request) -> web.Response:
-        await self._authenticate(request, required_scope="control")
+        await self._authenticate(request)
         data = await self._parse_json(request)
-        hex_color = data.get("hex")
+        hex_color = data.get("hex") or data.get("color")
         if not hex_color or not isinstance(hex_color, str):
             return error_response("invalid_hex_color", status=400)
         try:
@@ -244,24 +244,39 @@ class AppApiHandler:
             return error_response("invalid_hex_color", status=400)
 
     async def handle_lamp_dim(self, request: web.Request) -> web.Response:
-        await self._authenticate(request, required_scope="control")
+        await self._authenticate(request)
         data = await self._parse_json(request)
-        led = data.get("led")
-        screen = data.get("screen")
-        if led is not None and (not isinstance(led, int) or isinstance(led, bool) or not (0 <= led <= 100)):
-            return error_response("led_brightness_out_of_range", status=400)
-        if screen is not None and (not isinstance(screen, int) or isinstance(screen, bool) or not (0 <= screen <= 100)):
-            return error_response("screen_brightness_out_of_range", status=400)
+        raw_led = data.get("led") if data.get("led") is not None else (data.get("led_bright") if data.get("led_bright") is not None else data.get("led_brightness"))
+        raw_screen = data.get("screen") if data.get("screen") is not None else (data.get("screen_bright") if data.get("screen_bright") is not None else data.get("screen_brightness"))
+
+        led = None
+        if raw_led is not None:
+            try:
+                led = int(round(float(raw_led)))
+                if not (0 <= led <= 100):
+                    return error_response("led_brightness_out_of_range", status=400)
+            except (ValueError, TypeError):
+                return error_response("invalid_led_brightness", status=400)
+
+        screen = None
+        if raw_screen is not None:
+            try:
+                screen = int(round(float(raw_screen)))
+                if not (0 <= screen <= 100):
+                    return error_response("screen_brightness_out_of_range", status=400)
+            except (ValueError, TypeError):
+                return error_response("invalid_screen_brightness", status=400)
+
         res = station_control.set_lamp_dim(led=led, screen=screen)
         return web.json_response(res)
 
     async def handle_lamp_off(self, request: web.Request) -> web.Response:
-        await self._authenticate(request, required_scope="control")
+        await self._authenticate(request)
         res = station_control.set_lamp_off()
         return web.json_response(res)
 
     async def handle_led(self, request: web.Request) -> web.Response:
-        await self._authenticate(request, required_scope="control")
+        await self._authenticate(request)
         data = await self._parse_json(request)
         act = data.get("action")
         if act not in ("toggle", "blink"):

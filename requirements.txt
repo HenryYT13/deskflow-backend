@@ -8,3 +8,4 @@ spotipy
 pocketbase
 psutil
 aiohttp
+qrcode[pil]
