@@ -293,7 +293,7 @@ class FocusApiHandler:
             "server_url": server_url
         }
 
-        qr_payload = f"deskflow://pair?session={session_id}&server={server_url}&name={default_name}"
+        qr_payload = f"deskflow://pair?session={session_id}&server={server_url}&name={default_name}&platform={platform}"
         return web.json_response({
             "success": True,
             "session_id": session_id,
@@ -516,7 +516,10 @@ class FocusApiHandler:
 
         target_device_id = data.get("device_id") or current_device.get("device_id")
         if target_device_id != current_device.get("device_id"):
-            return error_response("forbidden", status=403)
+            caller_scopes = current_device.get("scopes") or []
+            # Only devices with 'control' scope are authorized to revoke/unpair other devices
+            if "control" not in caller_scopes:
+                return error_response("forbidden", status=403)
         revoked = await self.service.unpair_device(target_device_id)
         return web.json_response({
             "success": True,

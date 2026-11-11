@@ -224,15 +224,16 @@ def setup_discord_commands(
             await interaction.followup.send("❌ Có lỗi khi đổi ngôn ngữ.", ephemeral=True)
 
     @focus_group.command(name="pair", description="Tạo mã liên kết thiết bị DeskFlow (Một lần dùng, 10 phút)")
-    @app_commands.describe(full_access="Cấp toàn quyền điều khiển Control & Spotify cho Android App (Mặc định: False)")
-    async def cmd_pair(interaction: discord.Interaction, full_access: Optional[bool] = False):
+    @app_commands.describe(full_access="Cấp toàn quyền điều khiển Control & Spotify cho thiết bị (Mặc định: True)")
+    async def cmd_pair(interaction: discord.Interaction, full_access: Optional[bool] = True):
         if not await _owner_check(interaction):
             return
         await interaction.response.defer(ephemeral=True)
         try:
-            scopes = ["focus", "control", "spotify"] if full_access else ["focus"]
+            is_full = True if full_access is None else full_access
+            scopes = ["focus", "control", "spotify"] if is_full else ["focus"]
             raw_code, expires_at = await service.auth.generate_pairing_code(scopes=scopes)
-            scope_desc = "Toàn quyền (Focus, Control, Spotify)" if full_access else "Cơ bản (Focus Mode)"
+            scope_desc = "Toàn quyền (Focus, Control, Spotify)" if is_full else "Cơ bản (Focus Mode)"
             # Send raw code strictly to owner in ephemeral message. Never logged!
             await interaction.followup.send(
                 f"🔑 **Mã liên kết thiết bị:** `{raw_code}`\n"

@@ -267,6 +267,32 @@ class TestFocusApi(AioHTTPTestCase):
         resp_a_revoked = await self.client.get("/api/focus/status", headers=headers_a)
         self.assertEqual(resp_a_revoked.status, 401)
 
+    async def test_unpair_cross_device_with_control_scope_succeeds(self):
+        # Register Admin/Desktop device with 'control' scope and regular device B
+        dev_admin = await self.auth.register_authorized_device(
+            device_name="Admin Desktop",
+            platform="desktop",
+            scopes=["focus", "control", "spotify"]
+        )
+        token_b, dev_b = await self._pair_helper()
+
+        headers_admin = {"Authorization": f"Bearer {dev_admin['device_token']}"}
+        headers_b = {"Authorization": f"Bearer {token_b}"}
+
+        # Device with 'control' scope revokes Device B -> succeeds!
+        resp = await self.client.post(
+            "/api/focus/unpair",
+            headers=headers_admin,
+            json={"device_id": dev_b}
+        )
+        self.assertEqual(resp.status, 200)
+        data = await resp.json()
+        self.assertTrue(data.get("revoked"))
+
+        # Verify Device B is now revoked
+        resp_b = await self.client.get("/api/focus/status", headers=headers_b)
+        self.assertEqual(resp_b.status, 401)
+
     async def test_exact_cors_origin_validation(self):
         allowed_ext = "chrome-extension://abcdefghijklmnopqrstuvwxyz123456"
         unauthorized_ext = "chrome-extension://rogueextension99999999999999"

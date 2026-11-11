@@ -1,6 +1,8 @@
 import httpx
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import config
+
+VN_TZ = timezone(timedelta(hours=7))
 
 WEEKDAY_MAP = {
     0: "Thứ 2", 1: "Thứ 3", 2: "Thứ 4", 3: "Thứ 5", 4: "Thứ 6", 5: "Thứ 7", 6: "Chủ Nhật"
@@ -107,7 +109,7 @@ async def get_processed_daily_tkb(target_day: str = None) -> dict:
         return {}
 
     if not target_day:
-        target_day = WEEKDAY_MAP.get(datetime.now().weekday(), "Thứ 2")
+        target_day = WEEKDAY_MAP.get(datetime.now(VN_TZ).weekday(), "Thứ 2")
 
     result = parse_day_data(data, target_day)
     result["week_number"] = sched_info.get("week_number", "N/A")
@@ -125,7 +127,7 @@ async def get_dual_day_tkb() -> dict:
     if not data:
         return {}
 
-    now = datetime.now()
+    now = datetime.now(VN_TZ)
     cur_idx = now.weekday()  # Thứ 2 là 0, Thứ 4 là 2, Thứ 5 là 3
 
     # 1. Hôm nay (Nếu hôm nay là Thứ 7 hoặc CN mà không có lịch học thì lấy Thứ 2 làm hôm nay)
