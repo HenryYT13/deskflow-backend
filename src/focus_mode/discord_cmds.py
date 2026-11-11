@@ -223,9 +223,7 @@ def setup_discord_commands(
             logger.error(f"[Discord] Error in /app language: {e}", exc_info=True)
             await interaction.followup.send("❌ Có lỗi khi đổi ngôn ngữ.", ephemeral=True)
 
-    @focus_group.command(name="pair", description="Tạo mã liên kết thiết bị DeskFlow (Một lần dùng, 10 phút)")
-    @app_commands.describe(full_access="Cấp toàn quyền điều khiển Control & Spotify cho thiết bị (Mặc định: True)")
-    async def cmd_pair(interaction: discord.Interaction, full_access: Optional[bool] = True):
+    async def _handle_pair(interaction: discord.Interaction, full_access: Optional[bool] = True):
         if not await _owner_check(interaction):
             return
         await interaction.response.defer(ephemeral=True)
@@ -234,18 +232,48 @@ def setup_discord_commands(
             scopes = ["focus", "control", "spotify"] if is_full else ["focus"]
             raw_code, expires_at = await service.auth.generate_pairing_code(scopes=scopes)
             scope_desc = "Toàn quyền (Focus, Control, Spotify)" if is_full else "Cơ bản (Focus Mode)"
-            # Send raw code strictly to owner in ephemeral message. Never logged!
-            await interaction.followup.send(
-                f"🔑 **Mã liên kết thiết bị:** `{raw_code}`\n"
-                f"🛡️ **Quyền cấp phát:** {scope_desc}\n\n"
-                f"⚠️ *Mã chỉ có hiệu lực trong 10 phút và sử dụng đúng 1 lần.* Không chia sẻ mã này cho người khác!",
-                ephemeral=True
+
+            qr_file = None
+            try:
+                import io
+                import qrcode
+                qr_payload = f"deskflow://pair?code={raw_code}"
+                qr = qrcode.QRCode(box_size=8, border=2)
+                qr.add_data(qr_payload)
+                qr.make(fit=True)
+                img = qr.make_image(fill_color="black", back_color="white")
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                buf.seek(0)
+                qr_file = discord.File(fp=buf, filename="pair_qr.png")
+            except Exception as qr_err:
+                logger.warning(f"[Discord] Failed to generate pair QR image: {qr_err}")
+
+            embed = discord.Embed(
+                title="🔑 Ghép nối thiết bị DeskFlow",
+                description=(
+                    f"**Mã liên kết:** `{raw_code}`\n"
+                    f"🛡️ **Quyền cấp phát:** {scope_desc}\n\n"
+                    f"📱 **Cách quét:** Mở app Deskflow trên điện thoại, bấm **Quét mã QR** và hướng camera vào mã QR bên dưới để liên kết ngay!\n\n"
+                    f"⚠️ *Mã chỉ có hiệu lực trong 10 phút và sử dụng đúng 1 lần.* Không chia sẻ mã này cho người khác!"
+                ),
+                color=0x38BDF8
             )
+            if qr_file:
+                embed.set_image(url="attachment://pair_qr.png")
+                await interaction.followup.send(embed=embed, file=qr_file, ephemeral=True)
+            else:
+                await interaction.followup.send(embed=embed, ephemeral=True)
         except StorageUnavailableError:
             await interaction.followup.send("⚠️ Lỗi lưu trữ: Bộ nhớ Focus Mode hiện không khả dụng.", ephemeral=True)
         except Exception as e:
-            logger.error(f"[Discord] Error in /app pair: {e}", exc_info=True)
+            logger.error(f"[Discord] Error in pair command: {e}", exc_info=True)
             await interaction.followup.send("❌ Có lỗi khi tạo mã liên kết.", ephemeral=True)
+
+    @focus_group.command(name="pair", description="Tạo mã và ảnh QR liên kết thiết bị DeskFlow (Một lần dùng, 10 phút)")
+    @app_commands.describe(full_access="Cấp toàn quyền điều khiển Control & Spotify cho thiết bị (Mặc định: True)")
+    async def cmd_pair(interaction: discord.Interaction, full_access: Optional[bool] = True):
+        await _handle_pair(interaction, full_access=full_access)
 
     @focus_group.command(name="devices", description="Xem danh sách các thiết bị đã liên kết")
     async def cmd_devices(interaction: discord.Interaction):
@@ -292,6 +320,16 @@ def setup_discord_commands(
             await interaction.followup.send("❌ Có lỗi khi thu hồi thiết bị.", ephemeral=True)
 
     tree.add_command(focus_group)
+
+    @tree.command(name="pair", description="Tạo mã và ảnh QR liên kết ứng dụng DeskFlow")
+    @app_commands.describe(full_access="Cấp toàn quyền điều khiển Control & Spotify cho thiết bị (Mặc định: True)")
+    async def cmd_root_pair(interaction: discord.Interaction, full_access: Optional[bool] = True):
+        await _handle_pair(interaction, full_access=full_access)
+
+    @tree.command(name="qr", description="Tạo mã và ảnh QR liên kết ứng dụng DeskFlow")
+    @app_commands.describe(full_access="Cấp toàn quyền điều khiển Control & Spotify cho thiết bị (Mặc định: True)")
+    async def cmd_root_qr(interaction: discord.Interaction, full_access: Optional[bool] = True):
+        await _handle_pair(interaction, full_access=full_access)
 
     @tree.command(name="focus_mode", description="[Đã chuyển sang /app] Vui lòng sử dụng /app")
     async def legacy_focus_mode_cmd(interaction: discord.Interaction):
