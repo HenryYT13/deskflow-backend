@@ -103,6 +103,22 @@ def set_playback_volume(volume_percent: int):
     except Exception as e:
         logger.error(f"[Spotify Control Error] Set volume: {e}")
 
+def get_current_volume():
+    """Returns the active Spotify device volume (0-100), or None if unknown."""
+    global sp_client
+    if not sp_client:
+        return None
+    try:
+        playback = sp_client.current_playback()
+        if playback and playback.get("device"):
+            vol = playback["device"].get("volume_percent")
+            if isinstance(vol, int):
+                return max(0, min(100, vol))
+    except Exception as e:
+        logger.warning(f"[Spotify] Could not read volume: {e}")
+    return None
+
+
 def parse_lrc(lrc_text: str):
     """Phân tích cú pháp chuỗi [mm:ss.xx] thành danh sách (mili_giay, text)"""
     timeline = []
@@ -250,7 +266,8 @@ def get_current_playing(force_api: bool = False):
                 "lyric_next": "",
                 "lyrics_window": ["", "", "", "", ""],
                 "active_lyric_index": 2,
-                "cover_url": None
+                "cover_url": None,
+                "volume": None
             }
             return _last_playback_data
 
@@ -283,7 +300,8 @@ def get_current_playing(force_api: bool = False):
             "lyric_next": next_l,
             "lyrics_window": window_l,
             "active_lyric_index": active_idx,
-            "cover_url": cover_url
+            "cover_url": cover_url,
+            "volume": (playback.get("device") or {}).get("volume_percent")
         }
         return _last_playback_data
 

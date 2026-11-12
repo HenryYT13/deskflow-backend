@@ -383,6 +383,17 @@ async def handle_pogo_action(action: str):
         spotify_service.next_track()
     elif action == "press_prev":
         spotify_service.previous_track()
+    elif action in ("volume_up", "volume_down"):
+        # Station hardware menu volume stepper (±5%), clamped 0-100.
+        delta = 5 if action == "volume_up" else -5
+        # Blocking Spotify calls run off the event loop thread.
+        current = await asyncio.to_thread(spotify_service.get_current_volume)
+        base = current if current is not None else 50
+        new_volume = max(0, min(100, base + delta))
+        await asyncio.to_thread(spotify_service.set_playback_volume, new_volume)
+        # Echo the authoritative value back so the OLED menu and every app agree.
+        station_control.set_spotify_volume(new_volume)
+        logger.info(f"[Station Menu] Spotify volume -> {new_volume}% ({action})")
 
 def on_connect(client, userdata, flags, rc, properties=None):
     if rc == 0:
@@ -541,6 +552,7 @@ class DeskFlowBot(discord.Client):
                             "progress_pct": sp_data.get("progress_pct", 0),
                             "lyric_curr": curr_lyric,
                             "lyric_next": clean_ascii(sp_data.get("lyric_next", "")),
+                            "volume": sp_data.get("volume"),
                             "is_playing": True
                         }
                         if mqtt_client and mqtt_client.is_connected():
@@ -746,27 +758,25 @@ async def cmd_lamp_color(interaction: discord.Interaction, hex: str):
     except Exception as e:
         await interaction.followup.send(f"❌ Mã màu không hợp lệ: `{e}`", ephemeral=True)
 
-@bot.tree.command(name="lamp_dim", description="Điều chỉnh độ sáng cho vòng LED và đèn nền màn hình ST7789 qua PWM")
-@app_commands.describe(led="Độ sáng vòng LED (0-100%)", screen="Độ sáng màn hình ST7789 (0-100%)")
-async def cmd_lamp_dim(interaction: discord.Interaction, led: Optional[int] = None, screen: Optional[int] = None):
+@bot.tree.command(name="lamp_dim", description="Điều chỉnh độ sáng vòng LED WS2812B (0-100%)")
+@app_commands.describe(led="Độ sáng vòng LED (0-100%)")
+async def cmd_lamp_dim(interaction: discord.Interaction, led: int):
     await interaction.response.defer(ephemeral=True)
-    payload = {"action": "dim"}
-    resp = []
-    if led is not None:
-        payload["led_bright"] = max(0, min(100, led))
-        resp.append(f"LED: `{payload['led_bright']}%`")
-    if screen is not None:
-        payload["screen_bright"] = max(0, min(100, screen))
-        resp.append(f"Màn hình: `{payload['screen_bright']}%`")
+    value = max(0, min(100, led))
+    station_control.set_lamp_dim(led=value)
+    await interaction.followup.send(f"🔆 Đã đặt độ sáng vòng LED: `{value}%`", ephemeral=True)
 
-    mqtt_publish_logged("deskflow/display", json.dumps(payload))
-    await interaction.followup.send(f"🔆 Đã điều chỉnh độ sáng: {', '.join(resp)}", ephemeral=True)
+@bot.tree.command(name="lamp_on", description="Bật lại vòng LED WS2812B với màu đã lưu")
+async def cmd_lamp_on(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    station_control.set_led("on")
+    await interaction.followup.send("💡 Đã bật vòng LED trang trí.", ephemeral=True)
 
 @bot.tree.command(name="lamp_off", description="Tắt nhanh vòng LED (màn hình đồng hồ vẫn sáng bình thường)")
 async def cmd_lamp_off(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-    mqtt_publish_logged("deskflow/display", json.dumps({"action": "led_off"}))
-    await interaction.followup.send("🌙 Đã tắt nhanh vòng LED trang trí.", ephemeral=True)
+    station_control.set_led("off")
+    await interaction.followup.send("🌙 Đã tắt vòng LED trang trí.", ephemeral=True)
 
 @bot.tree.command(name="clock_style", description="Đổi kiểu hiển thị mặt đồng hồ trên DeskFlow")
 @app_commands.describe(style="Chọn kiểu mặt đồng hồ")

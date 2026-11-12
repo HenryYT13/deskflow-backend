@@ -233,7 +233,7 @@ class AlarmEngine:
             self._publish_alarm_mqtt(payload)
             return {"success": True, "duration": payload["duration"]}
 
-    async def play_morse(self, pattern: str, unit_ms: int = 80, freq: int = 2400) -> Dict[str, Any]:
+    async def play_morse(self, pattern: str, unit_ms: int = 60, freq: int = 1000) -> Dict[str, Any]:
         """Sends a Morse code playback command to the ESP32 station."""
         async with self._lock:
             cleaned_pattern = pattern.strip()[:500]

@@ -103,6 +103,20 @@ class TestMorseApi(AioHTTPTestCase):
         call_args = self.mock_mqtt.publish.call_args[0]
         self.assertEqual(call_args[0], "deskflow/alarm")
 
+    async def test_morse_play_uses_station_defaults(self):
+        """Omitting unit_ms/freq must fall back to the station defaults: 60 ms / 1000 Hz."""
+        token = await self._create_token(scopes=["focus", "control"])
+        headers = {"Authorization": f"Bearer {token}"}
+        resp = await self.client.post(
+            "/api/app/control/morse/play",
+            json={"pattern": "... --- ..."},
+            headers=headers,
+        )
+        self.assertEqual(resp.status, 200)
+        data = await resp.json()
+        self.assertEqual(data.get("unit_ms"), 60)
+        self.assertEqual(data.get("freq"), 1000)
+
     async def test_morse_play_unauthenticated(self):
         payload = {"pattern": "... --- ..."}
         resp = await self.client.post("/api/app/control/morse/play", json=payload)

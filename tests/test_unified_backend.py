@@ -153,19 +153,25 @@ class TestStationControl(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             self.mgr.set_lamp_color("not_a_color")
 
-        # Dim
+        # Dim: LED ring only. The ST7789 backlight is fixed hardware, so any
+        # legacy "screen" argument must be ignored rather than rejected.
         res_dim = self.mgr.set_lamp_dim(led=50, screen=80)
         self.assertTrue(res_dim["success"])
         self.assertEqual(res_dim["led_bright"], 50)
-        self.assertEqual(res_dim["screen_bright"], 80)
+        self.assertNotIn("screen_bright", res_dim)
 
         # Off
         res_off = self.mgr.set_lamp_off()
         self.assertTrue(res_off["success"])
 
-        # LED action
-        res_led = self.mgr.set_led("blink")
-        self.assertTrue(res_led["success"])
+        # LED actions: on / off / toggle / blink
+        for act in ("on", "off", "toggle", "blink"):
+            res_led = self.mgr.set_led(act)
+            self.assertTrue(res_led["success"])
+            self.assertEqual(res_led["action"], act)
+
+        with self.assertRaises(ValueError):
+            self.mgr.set_led("nonsense")
 
     def test_sticky_and_countdown(self):
         res_note = self.mgr.set_sticky_note("Lam bai tap Toan")

@@ -4,6 +4,18 @@ Toàn bộ lịch sử các bản phát hành và cập nhật quan trọng củ
 
 ---
 
+## [v1.0.5] - 2026-11-12
+
+### ✨ Thay đổi (Changes)
+- **`/api/app/control/lamp/dim` chỉ còn điều khiển vòng LED.** Bỏ hẳn tham số `screen` (đèn nền ST7789 nối cứng 3.3V, không PWM được). Bản cũ vẫn gửi `screen` thì backend bỏ qua an toàn, không trả lỗi.
+- **`/api/app/control/led` nhận thêm `on` và `off`** (trước chỉ `toggle` / `blink`) để app desktop bật lại đèn sau khi tắt.
+- **Morse mặc định 60 ms / 1000 Hz** ở cả `alarm_engine.play_morse`, `station_control.play_morse` và route `/api/app/control/morse/play` (giá trị sai lệch vẫn được kẹp về mặc định mới).
+- **Đồng bộ âm lượng Spotify:** `set_spotify_volume()` phát `{"action":"spotify_volume","volume":N}` xuống `deskflow/display`; route `/api/app/spotify/volume` và menu phần cứng ESP32 (`volume_up` / `volume_down`) đều gọi hàm này để OLED và mọi app luôn khớp.
+- **`spotify_service.get_current_volume()`** đọc `device.volume_percent`; payload `spotify_update` gửi kèm `volume` để trạm hiển thị đúng.
+- **Discord:** `/lamp_dim` chỉ còn tham số `led`, thêm `/lamp_on`; `/lamp_off` dùng action `off`.
+
+---
+
 ## [v1.0.4] - 2026-11-11
 
 ### ✨ Tính năng mới (New Features)

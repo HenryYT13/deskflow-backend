@@ -616,6 +616,13 @@ class StationControlManager:
         return {"success": True, "hex": normalized}
 
     def set_lamp_dim(self, led: Optional[Any] = None, screen: Optional[Any] = None) -> Dict[str, Any]:
+        """Adjust the WS2812B LED ring brightness (0-100%).
+
+        ``screen`` is accepted for backwards compatibility with older app builds
+        but is ignored: the ST7789 backlight is wired to 3.3V and cannot be
+        dimmed by software, so the OLED brightness control was removed from all
+        clients and from the station firmware.
+        """
         payload: Dict[str, Any] = {"action": "dim"}
         res: Dict[str, Any] = {"success": True}
         if led is not None:
@@ -634,11 +641,6 @@ class StationControlManager:
                 self._settings_save_timer = threading.Timer(1.0, self._save_settings)
                 self._settings_save_timer.daemon = True
                 self._settings_save_timer.start()
-        if screen is not None:
-            screen_val = max(0, min(100, int(round(float(screen)))))
-            payload["screen_bright"] = screen_val
-            payload["screen_brightness"] = screen_val
-            res["screen_bright"] = screen_val
         msg = json.dumps(payload)
         self.mqtt_publish("deskflow/display", msg)
         self.mqtt_publish("deskflow/hardware", msg)
@@ -648,9 +650,16 @@ class StationControlManager:
         self.mqtt_publish("deskflow/display", json.dumps({"action": "led_off"}))
         return {"success": True, "lamp": "off"}
 
+    def set_spotify_volume(self, volume: int) -> Dict[str, Any]:
+        """Sets Spotify volume and mirrors it to the station OLED menu."""
+        vol = max(0, min(100, int(round(float(volume)))))
+        self.mqtt_publish("deskflow/display", json.dumps({"action": "spotify_volume", "volume": vol}))
+        return {"success": True, "volume": vol}
+
     def set_led(self, action: str) -> Dict[str, Any]:
-        if action not in ("toggle", "blink"):
-            raise ValueError("LED action must be 'toggle' or 'blink'.")
+        """Explicit on/off (plus legacy toggle/blink) for the WS2812B ring."""
+        if action not in ("on", "off", "toggle", "blink"):
+            raise ValueError("LED action must be 'on', 'off', 'toggle' or 'blink'.")
         self.mqtt_publish("deskflow/display", json.dumps({"action": "led", "act": action}))
         return {"success": True, "action": action}
 
@@ -1199,7 +1208,7 @@ class StationControlManager:
         await alarm_engine.trigger_buzz(duration=dur)
         return {"success": True, "duration_ms": dur}
 
-    async def play_morse(self, pattern: str, unit_ms: int = 80, freq: int = 2400) -> Dict[str, Any]:
+    async def play_morse(self, pattern: str, unit_ms: int = 60, freq: int = 1000) -> Dict[str, Any]:
         return await alarm_engine.play_morse(pattern=pattern, unit_ms=unit_ms, freq=freq)
 
     async def stop_morse(self) -> Dict[str, Any]:

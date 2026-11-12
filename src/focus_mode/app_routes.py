@@ -279,7 +279,7 @@ class AppApiHandler:
         await self._authenticate(request)
         data = await self._parse_json(request)
         act = data.get("action")
-        if act not in ("toggle", "blink"):
+        if act not in ("on", "off", "toggle", "blink"):
             return error_response("invalid_led_action", status=400)
         res = station_control.set_led(act)
         return web.json_response(res)
@@ -331,12 +331,13 @@ class AppApiHandler:
         pattern = data.get("pattern", "")
         if not isinstance(pattern, str) or not pattern.strip():
             return error_response("invalid_morse_pattern", status=400)
-        unit_ms = data.get("unit_ms", 80)
+        # Station defaults: 60 ms dot unit, 1000 Hz tone.
+        unit_ms = data.get("unit_ms", 60)
         if not isinstance(unit_ms, int) or isinstance(unit_ms, bool) or unit_ms < 20 or unit_ms > 500:
-            unit_ms = 80
-        freq = data.get("freq", 2400)
+            unit_ms = 60
+        freq = data.get("freq", 1000)
         if not isinstance(freq, int) or isinstance(freq, bool) or freq < 400 or freq > 4000:
-            freq = 2400
+            freq = 1000
         res = await station_control.play_morse(pattern=pattern.strip(), unit_ms=unit_ms, freq=freq)
         return web.json_response(res)
 
@@ -837,6 +838,8 @@ class AppApiHandler:
 
         try:
             await asyncio.to_thread(spotify_service.set_playback_volume, vol)
+            # Mirror the value to the ESP32 so its on-device menu stays in sync.
+            station_control.set_spotify_volume(vol)
             return web.json_response({
                 "success": True,
                 "volume": vol
