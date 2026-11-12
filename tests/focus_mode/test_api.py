@@ -123,6 +123,40 @@ class TestFocusApi(AioHTTPTestCase):
         self.assertTrue(data["focus_active"])
         self.assertEqual(data["version"], 1)
 
+    async def test_enable_refuses_stop_request_and_keeps_state(self):
+        """`{"enabled": false}` must never start a session again.
+
+        Regression: desktop clients sent this to stop Focus Mode, the handler
+        ignored the flag and created a fresh 25-minute session, so the window
+        re-locked right after a correct challenge answer.
+        """
+        token, _ = await self._pair_helper()
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Start a short session, then try the legacy "stop" request.
+        resp = await self.client.post(
+            "/api/focus/enable",
+            headers=headers,
+            json={"language": "en", "duration_minutes": 5},
+        )
+        self.assertEqual(resp.status, 200)
+        started = await resp.json()
+        self.assertTrue(started["enabled"])
+        version_after_start = started["version"]
+
+        resp = await self.client.post(
+            "/api/focus/enable", headers=headers, json={"enabled": False}
+        )
+        self.assertEqual(resp.status, 409)
+        body = await resp.json()
+        self.assertEqual(body["error"]["code"], "challenge_required")
+
+        # The session must be untouched: same version, still enabled.
+        resp = await self.client.get("/api/focus/status", headers=headers)
+        status = await resp.json()
+        self.assertTrue(status["enabled"])
+        self.assertEqual(status["version"], version_after_start)
+
     async def test_classify_url_endpoint(self):
         token, _ = await self._pair_helper()
         headers = {"Authorization": f"Bearer {token}"}

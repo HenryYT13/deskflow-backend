@@ -4,6 +4,16 @@ Toàn bộ lịch sử các bản phát hành và cập nhật quan trọng củ
 
 ---
 
+## [v1.0.6] - 2026-11-12
+
+### 🐛 Sửa lỗi (Fixes)
+- **`POST /api/focus/enable` từ chối `{"enabled": false}` bằng 409 `challenge_required`.**
+  - Endpoint này chỉ dùng để BẮT ĐẦU phiên, nhưng trước đây bỏ qua cờ `enabled` nên mọi yêu cầu "dừng" của app desktop lại tạo phiên mới. Hệ quả: giải đúng bài toán xong cửa sổ vẫn bị khoá lại sau 10 giây.
+  - Giờ trả lỗi rõ ràng và **không thay đổi state** (version giữ nguyên), buộc client đi qua `/api/focus/challenge` + `/api/focus/verify`.
+- Thêm regression test `test_enable_refuses_stop_request_and_keeps_state`.
+
+---
+
 ## [v1.0.5] - 2026-11-12
 
 ### ✨ Thay đổi (Changes)

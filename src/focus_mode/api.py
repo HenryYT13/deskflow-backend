@@ -483,6 +483,13 @@ class FocusApiHandler:
     async def handle_enable(self, request: web.Request) -> web.Response:
         await self._authenticate(request)
         data = await self._parse_json(request)
+
+        # Clients used to send {"enabled": false} here to stop a session. This
+        # endpoint only ever STARTS one, so that request silently created a new
+        # session and re-locked the desktop clients. Refuse it explicitly.
+        if data.get("enabled") is False:
+            return error_response("challenge_required", status=409)
+
         language = data.get("language", "en")
         if language not in ["en", "vi"]:
             language = "vi"
