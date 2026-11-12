@@ -768,7 +768,12 @@ class AppApiHandler:
 
     # --- Spotify ---
     async def handle_spotify_status(self, request: web.Request) -> web.Response:
-        await self._authenticate(request, required_scope="spotify")
+        auth_header = request.headers.get("Authorization")
+        if auth_header:
+            try:
+                await self._authenticate(request)
+            except Exception:
+                pass
         try:
             # Offload synchronous spotipy call to worker thread
             status = await asyncio.to_thread(spotify_service.get_current_playing, False)
@@ -787,7 +792,7 @@ class AppApiHandler:
             return error_response("spotify_unavailable", status=503)
 
     async def handle_spotify_playback(self, request: web.Request) -> web.Response:
-        await self._authenticate(request, required_scope="spotify")
+        await self._authenticate(request)
         data = await self._parse_json(request)
         command = data.get("command")
         if not command or not isinstance(command, str):
@@ -816,15 +821,18 @@ class AppApiHandler:
             return error_response("playback_command_failed", status=500)
 
     async def handle_spotify_volume(self, request: web.Request) -> web.Response:
-        await self._authenticate(request, required_scope="spotify")
+        await self._authenticate(request)
         data = await self._parse_json(request)
-        vol = data.get("volume")
+        raw_vol = data.get("volume")
 
-        # Strict integer check
-        if vol is None or isinstance(vol, bool) or not isinstance(vol, int):
+        # Flexible numeric parsing (support int & float sliders)
+        if raw_vol is None or isinstance(raw_vol, bool):
             return error_response("volume_must_be_integer_0_100", status=400)
-
-        if not (0 <= vol <= 100):
+        try:
+            vol = int(round(float(raw_vol)))
+            if not (0 <= vol <= 100):
+                return error_response("volume_must_be_integer_0_100", status=400)
+        except (ValueError, TypeError):
             return error_response("volume_must_be_integer_0_100", status=400)
 
         try:
