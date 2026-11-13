@@ -136,8 +136,9 @@ def get_server_metrics():
     uptime_mins = (uptime_seconds % 3600) // 60
 
     return {
-        "cpu": round(cpu_pct, 1),
-        "ram_pct": round(ram.percent, 1),
+        # Clamp so a bad psutil reading (e.g. 441%) can never reach the clients.
+        "cpu": max(0.0, min(100.0, round(cpu_pct, 1))),
+        "ram_pct": max(0.0, min(100.0, round(ram.percent, 1))),
         "ram_used_mb": int(ram.used / (1024 * 1024)),
         "ram_total_mb": int(ram.total / (1024 * 1024)),
         "uptime": f"{uptime_hours}h {uptime_mins}m"

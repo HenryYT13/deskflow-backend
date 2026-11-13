@@ -246,7 +246,7 @@ def _match_lyrics(progress_ms: int, timeline: list):
 
 def get_current_playing(force_api: bool = False):
     """
-    Chỉ gọi Spotify API thực tế nếu đã cách lần trước >= 4.0 giây.
+    Chỉ gọi Spotify API thực tế nếu đã cách lần trước >= 1.0 giây.
     Trong các lần gọi trung gian, tự động bù giờ nội suy để trả về tiến trình và lời bài hát chuẩn xác.
     """
     global sp_client, _last_api_fetch_time, _last_playback_data
@@ -256,9 +256,13 @@ def get_current_playing(force_api: bool = False):
     now = time.time()
 
     # 1. Nếu chưa đủ 4s và đã có dữ liệu cache: Nội suy tiến trình theo đồng hồ máy tính
-    if not force_api and _last_playback_data and (now - _last_api_fetch_time < 4.0):
+    if not force_api and _last_playback_data and (now - _last_api_fetch_time < 1.0):
         if not _last_playback_data.get("is_playing"):
-            return _last_playback_data
+            # Still return a normalised copy carrying the latest volume so the
+            # apps stop showing a stale slider when playback is paused.
+            paused = dict(_last_playback_data)
+            paused["volume"] = (_last_playback_data or {}).get("volume_pct")
+            return paused
 
         elapsed_ms = int((now - _last_api_fetch_time) * 1000)
         dur_ms = _last_playback_data["duration_ms"]
@@ -276,7 +280,7 @@ def get_current_playing(force_api: bool = False):
         result["active_lyric_index"] = active_idx
         return result
 
-    # 2. Đã đủ >= 4s: Gửi 1 request thực tế lên Spotify API
+    # 2. Đã đủ >= 1s: Gửi 1 request thực tế lên Spotify API
     try:
         playback = sp_client.current_playback()
         _last_api_fetch_time = now

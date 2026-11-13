@@ -767,6 +767,22 @@ class AppApiHandler:
         if not isinstance(limit, int) or isinstance(limit, bool) or limit < 10 or limit > 200:
             limit = 75
         res = await asyncio.to_thread(station_control.generate_groq_quote, topic=topic, max_chars=limit)
+
+        # Optionally pin the generated quote to the station as a sticky note, so
+        # "generate then pin" works from every client in one call.
+        if data.get("pin") is True and res.get("success") and res.get("quote"):
+            try:
+                note = station_control.add_note(
+                    content=str(res["quote"]), title="Danh ngôn"
+                )
+                note = station_control.pin_note_to_station(note["id"])
+                res["note"] = note
+                res["pinned"] = True
+            except Exception as exc:
+                logger.warning(f"[AppAPI] Could not pin generated quote: {exc}")
+                res["pinned"] = False
+
+        res.setdefault("author", "Groq AI")
         return web.json_response(res)
 
     async def handle_timer_start(self, request: web.Request) -> web.Response:

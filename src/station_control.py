@@ -362,8 +362,8 @@ class StationControlManager:
             uptime_hours = uptime_seconds // 3600
             uptime_mins = (uptime_seconds % 3600) // 60
             return {
-                "cpu": round(cpu_pct, 1),
-                "ram_pct": round(ram.percent, 1),
+                "cpu": max(0.0, min(100.0, round(cpu_pct, 1))),
+                "ram_pct": max(0.0, min(100.0, round(ram.percent, 1))),
                 "ram_used_mb": int(ram.used / (1024 * 1024)),
                 "ram_total_mb": int(ram.total / (1024 * 1024)),
                 "disk_used_gb": disk_used_gb,
@@ -411,10 +411,11 @@ class StationControlManager:
                 if _fresh(entry) and (live_entry is None or entry.get("last_seen", 0) > live_entry.get("last_seen", 0)):
                     live_id, live_entry = dev_id, entry
             if live_entry is not None:
+                # Use a live machine's numbers for display, but DO NOT change the
+                # user's explicit selection: rewriting it here is what made the
+                # "spec device" choice revert to the most recent device.
                 comp_metrics = live_entry
                 is_comp_online = True
-                if sel_id != live_id:
-                    self.selected_display_device_id = live_id
             elif (now - self.laptop_status.get("last_seen", 0)) < 60:
                 # Legacy laptop_stats path (pre multi-device telemetry).
                 comp_metrics = {
