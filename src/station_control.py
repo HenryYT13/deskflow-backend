@@ -155,11 +155,12 @@ def clean_ascii(text: str) -> str:
 # non-blocking value (this is what made Windows show "Server CPU 0.0%").
 _cpu_sample_lock = threading.Lock()
 _cpu_sample_value: float = 0.0
+_cpu_last_known: float = 0.0
 _cpu_sampler_started = False
 
 
 def _cpu_sampler_loop() -> None:
-    global _cpu_sample_value
+    global _cpu_sample_value, _cpu_last_known
     try:
         import psutil
     except Exception:
@@ -171,8 +172,13 @@ def _cpu_sampler_loop() -> None:
             value = float(psutil.cpu_percent(interval=0.5))
         except Exception:
             value = 0.0
+        value = max(0.0, min(100.0, value))
         with _cpu_sample_lock:
-            _cpu_sample_value = max(0.0, min(100.0, value))
+            _cpu_sample_value = value
+            # On small KVM guests psutil sometimes samples an exact 0.0 even
+            # while the CPU is busy. Keep the last useful reading for those.
+            if value > 0.0:
+                _cpu_last_known = value
         time.sleep(0.5)
 
 
@@ -192,15 +198,21 @@ def get_cpu_percent() -> float:
     start_cpu_sampler()
     with _cpu_sample_lock:
         cached = _cpu_sample_value
+        last_known = _cpu_last_known
     if cached > 0.0:
         return cached
     try:
         import psutil
         # 0.3s is the smallest window that produced a non-zero value on the
         # production KVM guest; it is only used until the sampler warms up.
-        return max(0.0, min(100.0, float(psutil.cpu_percent(interval=0.3))))
+        live = max(0.0, min(100.0, float(psutil.cpu_percent(interval=0.3))))
     except Exception:
-        return 0.0
+        live = 0.0
+    if live > 0.0:
+        with _cpu_sample_lock:
+            globals()["_cpu_last_known"] = live
+        return live
+    return last_known
 
 
 class StationControlManager:
