@@ -599,6 +599,15 @@ class StationControlManager:
     def close_tkb(self) -> Dict[str, Any]:
         return self.switch_view("main")
 
+    def set_station_language(self, language: str) -> Dict[str, Any]:
+        """Switches the ESP32 UI language (menus + screens), not just the clock."""
+        lang = "en" if str(language).strip().lower().startswith("en") else "vi"
+        self.mqtt_publish(
+            "deskflow/display",
+            json.dumps({"action": "station_language", "language": lang}),
+        )
+        return {"success": True, "language": lang}
+
     def set_lamp_color(self, hex_color: str) -> Dict[str, Any]:
         """
         Sets the WS2812B NeoPixel LED lamp color. Accepts any arbitrary hex format:

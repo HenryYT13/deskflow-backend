@@ -314,6 +314,10 @@ class AppApiHandler:
         data = await self._parse_json(request)
         try:
             res = station_control.set_clock_config(data)
+            # `language` changes the station UI language too (menus, view list,
+            # status screens), not only the clock face.
+            if isinstance(data, dict) and str(data.get("language", "")).strip().lower() in ("vi", "en"):
+                station_control.set_station_language(str(data["language"]).strip().lower())
             return web.json_response({
                 "success": True,
                 "data": res
