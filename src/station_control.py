@@ -146,6 +146,63 @@ def clean_ascii(text: str) -> str:
     return "".join(c for c in nfd if unicodedata.category(c) != 'Mn')
 
 
+# ---------------------------------------------------------------------------
+# Cached CPU sampler
+# ---------------------------------------------------------------------------
+# ``psutil.cpu_percent(interval=None)`` needs two calls spaced by at least one
+# scheduler tick, and on small KVM guests even ``interval=0.1`` returns 0.0.
+# A dedicated thread samples once per second so every caller gets a real,
+# non-blocking value (this is what made Windows show "Server CPU 0.0%").
+_cpu_sample_lock = threading.Lock()
+_cpu_sample_value: float = 0.0
+_cpu_sampler_started = False
+
+
+def _cpu_sampler_loop() -> None:
+    global _cpu_sample_value
+    try:
+        import psutil
+    except Exception:
+        return
+    psutil.cpu_percent(interval=None)
+    time.sleep(0.5)
+    while True:
+        try:
+            value = float(psutil.cpu_percent(interval=0.5))
+        except Exception:
+            value = 0.0
+        with _cpu_sample_lock:
+            _cpu_sample_value = max(0.0, min(100.0, value))
+        time.sleep(0.5)
+
+
+def start_cpu_sampler() -> None:
+    """Starts the background CPU sampler once per process."""
+    global _cpu_sampler_started
+    with _cpu_sample_lock:
+        if _cpu_sampler_started:
+            return
+        _cpu_sampler_started = True
+    thread = threading.Thread(target=_cpu_sampler_loop, name="cpu-sampler", daemon=True)
+    thread.start()
+
+
+def get_cpu_percent() -> float:
+    """Returns the latest sampled CPU usage, falling back to a live sample."""
+    start_cpu_sampler()
+    with _cpu_sample_lock:
+        cached = _cpu_sample_value
+    if cached > 0.0:
+        return cached
+    try:
+        import psutil
+        # 0.3s is the smallest window that produced a non-zero value on the
+        # production KVM guest; it is only used until the sampler warms up.
+        return max(0.0, min(100.0, float(psutil.cpu_percent(interval=0.3))))
+    except Exception:
+        return 0.0
+
+
 class StationControlManager:
     def __init__(self):
         self._config_lock = threading.RLock()
@@ -284,11 +341,7 @@ class StationControlManager:
     def get_server_metrics(self) -> Dict[str, Any]:
         try:
             import psutil
-            # interval=None needs a previous sample; use a short blocking sample
-            # when the cached one is not ready so the value is never a fake 0.
-            cpu_pct = psutil.cpu_percent(interval=None)
-            if cpu_pct <= 0.0:
-                cpu_pct = psutil.cpu_percent(interval=0.1)
+            cpu_pct = get_cpu_percent()
             ram = psutil.virtual_memory()
             disk = psutil.disk_usage('/')
             disk_used_gb = round(disk.used / (1024 ** 3), 1)

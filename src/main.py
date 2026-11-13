@@ -22,6 +22,7 @@ import scheduler
 import spotify_service
 import focus_mode
 from alarm_engine import alarm_engine
+import station_control as station_control_module
 from station_control import station_control
 
 # Múi giờ Việt Nam (UTC+7 / ICT)
@@ -126,11 +127,9 @@ def clean_ascii(text: str) -> str:
     return "".join(c for c in nfd if unicodedata.category(c) != 'Mn')
 
 def get_server_metrics():
-    cpu_pct = psutil.cpu_percent(interval=None)
-    if cpu_pct <= 0.0:
-        # interval=None returns 0.0 until a second call exists; a short blocking
-        # sample avoids reporting a fake 0% CPU to the apps.
-        cpu_pct = psutil.cpu_percent(interval=0.1)
+    # Shared cached sampler: psutil.cpu_percent(interval=None) returns 0.0 and
+    # even a 0.1s window is too short on the production KVM guest.
+    cpu_pct = station_control_module.get_cpu_percent()
     ram = psutil.virtual_memory()
     uptime_seconds = int(time.time() - psutil.boot_time())
     uptime_hours = uptime_seconds // 3600
