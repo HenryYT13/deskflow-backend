@@ -95,10 +95,27 @@ def set_playback_volume(volume_percent: int):
     global sp_client
     if not sp_client:
         return
+    vol = max(0, min(100, int(volume_percent)))
     try:
         dev_id = _get_active_device_id()
-        vol = max(0, min(100, int(volume_percent)))
-        sp_client.volume(vol, device_id=dev_id)
+        if not dev_id:
+            # Spotify only applies volume changes on a known/active device.
+            # Falling through with device_id=None silently did nothing, which
+            # looked like "volume control is broken" from the apps.
+            devices = sp_client.devices().get("devices", [])
+            dev_id = devices[0]["id"] if devices else None
+        if not dev_id:
+            logger.warning("[Spotify Control] No Spotify device found; volume not applied.")
+            return
+        try:
+            sp_client.volume(vol, device_id=dev_id)
+        except Exception:
+            # Make sure the target device really is active, then retry once.
+            try:
+                sp_client.transfer_playback(device_id=dev_id, force_play=False)
+            except Exception:
+                pass
+            sp_client.volume(vol, device_id=dev_id)
         logger.info(f"[Spotify Control] -> Set volume: {vol}%")
     except Exception as e:
         logger.error(f"[Spotify Control Error] Set volume: {e}")

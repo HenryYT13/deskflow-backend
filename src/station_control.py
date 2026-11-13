@@ -324,50 +324,50 @@ class StationControlManager:
         comp_metrics = None
         is_comp_online = False
 
-        if sel_id:
-            if sel_id in self._device_telemetry:
-                entry = self._device_telemetry[sel_id]
-                is_comp_online = (now - entry.get("last_seen", 0)) < 15.0
-                comp_metrics = entry
-            else:
-                # Device selected but hasn't reported in this memory session: do not fall back to other machines
-                dev_name = "Selected Computer"
-                try:
-                    from focus_mode.service import focus_service
-                    d_info = focus_service.get_device(sel_id)
-                    if d_info and d_info.get("device_name"):
-                        dev_name = d_info["device_name"]
-                except Exception:
-                    pass
+        def _fresh(entry: Dict[str, Any]) -> bool:
+            return bool(entry) and (now - entry.get("last_seen", 0)) < 15.0
+
+        selected_entry = self._device_telemetry.get(sel_id) if sel_id else None
+        if _fresh(selected_entry):
+            comp_metrics = selected_entry
+            is_comp_online = True
+        else:
+            # The selected machine is not reporting (app closed, never reported
+            # in this run, etc.). Prefer whichever machine is still reporting so
+            # a configuration applied from Windows is not shown as 0/0/0, and
+            # move the selection to it. If nothing is live the values are zeroed
+            # below instead of leaking the last stale reading (e.g. RAM 441).
+            live_id, live_entry = None, None
+            for dev_id, entry in self._device_telemetry.items():
+                if _fresh(entry) and (live_entry is None or entry.get("last_seen", 0) > live_entry.get("last_seen", 0)):
+                    live_id, live_entry = dev_id, entry
+            if live_entry is not None:
+                comp_metrics = live_entry
+                is_comp_online = True
+                if sel_id != live_id:
+                    self.selected_display_device_id = live_id
+            elif (now - self.laptop_status.get("last_seen", 0)) < 60:
+                # Legacy laptop_stats path (pre multi-device telemetry).
                 comp_metrics = {
-                    "cpu": 0.0,
-                    "ram_pct": 0.0,
-                    "temp": 0.0,
-                    "battery": 0,
-                    "device_name": dev_name
+                    "cpu": self.laptop_status.get("cpu", 0),
+                    "ram_pct": self.laptop_status.get("ram", 0),
+                    "temp": self.laptop_status.get("temp", 0),
+                    "battery": self.laptop_status.get("battery", 0),
+                    "device_name": self.laptop_status.get("device_name", "Computer"),
                 }
-                is_comp_online = False
-        elif self._device_telemetry:
-            latest = max(self._device_telemetry.values(), key=lambda x: x.get("last_seen", 0), default=None)
-            if latest:
-                is_comp_online = (now - latest.get("last_seen", 0)) < 15.0
-                comp_metrics = latest
+                is_comp_online = True
 
-        if not comp_metrics:
-            is_lp_legacy = (now - self.laptop_status.get("last_seen", 0)) < 60
-            comp_metrics = {
-                "cpu": self.laptop_status.get("cpu", 0),
-                "ram_pct": self.laptop_status.get("ram", 0),
-                "temp": self.laptop_status.get("temp", 0),
-                "battery": self.laptop_status.get("battery", 0),
-                "device_name": self.laptop_status.get("device_name", "Computer")
-            }
-            is_comp_online = is_lp_legacy
-
+        comp_metrics = comp_metrics or {}
         comp_cpu = float(comp_metrics.get("cpu", 0))
         comp_ram = float(comp_metrics.get("ram_pct", comp_metrics.get("ram", 0)))
         comp_bat = int(comp_metrics.get("battery", 0))
         comp_name = str(comp_metrics.get("device_name", "Computer"))
+
+        if not is_comp_online:
+            # Never keep displaying the last reading of a machine that is gone.
+            comp_cpu = 0.0
+            comp_ram = 0.0
+            comp_bat = 0
 
         return {
             "station": {
@@ -525,7 +525,7 @@ class StationControlManager:
                 return cur_min >= start_min or cur_min < end_min
         return False
 
-    def switch_view(self, view: str) -> Dict[str, Any]:
+    def switch_view(self, view: str, tkb_payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         view_clean = view.strip().lower()
         valid_views = ("main", "stats", "tkb", "weather", "lyrics", "clock", "notes", "countdown", "focus")
         if view_clean not in valid_views:
@@ -536,16 +536,21 @@ class StationControlManager:
             self.mqtt_publish("deskflow/display", json.dumps({"action": "switch_view", "view": "main"}))
         elif view_clean == "stats":
             srv = self.get_server_metrics()
+            # Reuse the same resolved computer metrics as /control/status. Reading
+            # only the legacy laptop_status dict reported 0/0/0 for machines that
+            # send metrics through the HTTP telemetry endpoint (Windows).
+            comp = self.get_status().get("computer", {})
             payload = {
                 "action": "switch_view",
                 "view": "stats",
                 "server": srv,
                 "laptop": {
-                    "cpu": self.laptop_status.get("cpu", 0),
-                    "ram": self.laptop_status.get("ram", 0),
-                    "temp": self.laptop_status.get("temp", 0),
-                    "battery": self.laptop_status.get("battery", 0),
-                    "online": (time.time() - self.laptop_status.get("last_seen", 0)) < 60
+                    "cpu": comp.get("cpu", 0),
+                    "ram_pct": comp.get("ram", 0),
+                    "ram": comp.get("ram", 0),
+                    "temp": comp.get("temp", 0),
+                    "battery": comp.get("battery", 0),
+                    "online": comp.get("online", False)
                 }
             }
             self.mqtt_publish("deskflow/display", json.dumps(payload))
@@ -561,7 +566,17 @@ class StationControlManager:
             payload = {"action": "switch_view", "view": "lyrics", "curr": "Dang dong bo...", "next": ""}
             self.mqtt_publish("deskflow/display", json.dumps(payload, ensure_ascii=False))
         elif view_clean == "tkb":
-            self.mqtt_publish("deskflow/display", json.dumps({"action": "switch_view", "view": "tkb"}))
+            # Publish the schedule together with the view switch; a bare
+            # switch_view left the station on a blank TKB screen.
+            payload = None
+            if tkb_payload:
+                payload = dict(tkb_payload)
+                payload["action"] = "switch_view"
+                payload["view"] = "tkb"
+            if payload:
+                self.mqtt_publish("deskflow/display", json.dumps(payload, ensure_ascii=False))
+            else:
+                self.mqtt_publish("deskflow/display", json.dumps({"action": "switch_view", "view": "tkb"}))
         elif view_clean == "clock":
             self.mqtt_publish("deskflow/display", json.dumps({"action": "switch_view", "view": "clock"}))
         elif view_clean == "notes":

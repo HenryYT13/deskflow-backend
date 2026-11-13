@@ -166,3 +166,58 @@ async def get_dual_day_tkb() -> dict:
         "today": today_data,
         "tomorrow": next_day_data
     }
+
+
+def build_station_payload(dual_tkb: dict) -> dict:
+    """Build the ESP32 MQTT payload (ASCII-normalised) from a dual-day TKB."""
+    import unicodedata
+
+    def clean(text) -> str:
+        if not text:
+            return ""
+        text = str(text).replace("đ", "d").replace("Đ", "D")
+        nfd = unicodedata.normalize("NFD", text)
+        return "".join(c for c in nfd if unicodedata.category(c) != "Mn")
+
+    today = (dual_tkb or {}).get("today") or {}
+    tom = (dual_tkb or {}).get("tomorrow") or {}
+
+    morning = [clean(s.split(": ")[-1]) for s in today.get("morning", []) if s.strip()]
+    afternoon = [clean(s.split(": ")[-1]) for s in today.get("afternoon", []) if s.strip()]
+    has_afternoon = bool(today.get("has_afternoon")) and bool(afternoon)
+
+    dp_sang = clean(today.get("dp_sang", "Tu do"))
+    dp_chieu = clean(today.get("dp_chieu", ""))
+    if has_afternoon and dp_chieu and dp_chieu != dp_sang:
+        uniform = f"Sang: {dp_sang}, Chieu: {dp_chieu}"
+    elif has_afternoon:
+        uniform = f"{dp_sang} (chung ca ngay)"
+    else:
+        uniform = dp_sang
+
+    tom_morning = [clean(s.split(": ")[-1]) for s in tom.get("morning", []) if s.strip()]
+    tom_afternoon = [clean(s.split(": ")[-1]) for s in tom.get("afternoon", []) if s.strip()]
+    tom_has_afternoon = bool(tom.get("has_afternoon")) and bool(tom_afternoon)
+    tom_dp_sang = clean(tom.get("dp_sang", "Tu do"))
+    tom_dp_chieu = clean(tom.get("dp_chieu", ""))
+    if tom_has_afternoon and tom_dp_chieu and tom_dp_chieu != tom_dp_sang:
+        tom_uniform = f"Sang: {tom_dp_sang}, Chieu: {tom_dp_chieu}"
+    elif tom_has_afternoon:
+        tom_uniform = f"{tom_dp_sang} (chung ca ngay)"
+    else:
+        tom_uniform = tom_dp_sang
+
+    return {
+        "action": "sync_data",
+        "view": "tkb",
+        "day_name": clean(today.get("day", "Thu 4")),
+        "morning": ", ".join(morning) if morning else "Nghi hoc",
+        "has_afternoon": has_afternoon,
+        "afternoon": ", ".join(afternoon) if has_afternoon else "",
+        "uniform": uniform,
+        "tom_day": clean(tom.get("display_day", tom.get("day", "Ngay mai"))),
+        "tom_morning": ", ".join(tom_morning) if tom_morning else "Nghi hoc",
+        "tom_has_afternoon": tom_has_afternoon,
+        "tom_afternoon": ", ".join(tom_afternoon) if tom_has_afternoon else "",
+        "tom_uniform": tom_uniform,
+    }

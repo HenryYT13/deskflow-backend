@@ -220,7 +220,18 @@ class AppApiHandler:
         if not view or not isinstance(view, str):
             return error_response("invalid_view", status=400)
         try:
-            res = station_control.switch_view(view.strip().lower())
+            view_key = view.strip().lower()
+            tkb_payload = None
+            if view_key == "tkb":
+                # Fetch the schedule first so the station never shows an empty
+                # TKB after switching (Windows "sync to ESP32" button).
+                try:
+                    dual_tkb = await timetable.get_dual_day_tkb()
+                    if dual_tkb and dual_tkb.get("today"):
+                        tkb_payload = timetable.build_station_payload(dual_tkb)
+                except Exception as exc:
+                    logger.warning(f"[AppAPI] TKB payload unavailable: {exc}")
+            res = station_control.switch_view(view_key, tkb_payload=tkb_payload)
             return web.json_response(res)
         except ValueError as ve:
             return error_response(str(ve), status=400)

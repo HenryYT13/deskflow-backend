@@ -331,16 +331,18 @@ async def handle_pogo_action(action: str):
             mqtt_publish_logged("deskflow/display", json.dumps({"action": "switch_view", "view": "main"}))
         elif current_screen_mode == "stats":
             srv = get_server_metrics()
+            comp = station_control.get_status().get("computer", {})
             payload = {
                 "action": "switch_view",
                 "view": "stats",
                 "server": srv,
                 "laptop": {
-                    "cpu": laptop_status.get("cpu", 0),
-                    "ram": laptop_status.get("ram", 0),
-                    "temp": laptop_status.get("temp", 0),
-                    "battery": laptop_status.get("battery", 0),
-                    "online": (time.time() - laptop_status.get("last_seen", 0)) < 60
+                    "cpu": comp.get("cpu", 0),
+                    "ram_pct": comp.get("ram", 0),
+                    "ram": comp.get("ram", 0),
+                    "temp": comp.get("temp", 0),
+                    "battery": comp.get("battery", 0),
+                    "online": comp.get("online", False)
                 }
             }
             mqtt_publish_logged("deskflow/display", json.dumps(payload))
@@ -577,9 +579,16 @@ class DeskFlowBot(discord.Client):
                     lp_bat = selected_metrics.get("battery", 0)
                 else:
                     is_lp_online = (time.time() - laptop_status.get("last_seen", 0)) < 3.0
-                    lp_cpu = laptop_status.get("cpu", 0.0) if is_lp_online else 0.0
-                    lp_ram = laptop_status.get("ram", 0.0) if is_lp_online else 0.0
-                    lp_bat = laptop_status.get("battery", 0) if is_lp_online else 0
+                    if is_lp_online:
+                        lp_cpu = laptop_status.get("cpu", 0.0)
+                        lp_ram = laptop_status.get("ram", 0.0)
+                        lp_bat = laptop_status.get("battery", 0)
+                    else:
+                        # No live source: never rebroadcast the last known values
+                        # (that is how stale readings such as RAM 441 survived).
+                        lp_cpu = 0.0
+                        lp_ram = 0.0
+                        lp_bat = 0
 
                 payload = {
                     "action": "telemetry",
