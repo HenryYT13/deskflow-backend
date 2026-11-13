@@ -374,7 +374,7 @@ class StationControlManager:
                 "battery_pct": int(self.device_status.get("battery_pct", 100)),
                 "voltage": float(self.device_status.get("voltage", 4.12)),
                 "wifi_rssi": int(self.device_status.get("wifi_rssi", -55)),
-                "current_view": self.current_screen_mode,
+                "current_view": self.device_status.get("active_view") or self.current_screen_mode,
                 "weather": self.device_status.get("weather", "N/A"),
                 "math_active": self.device_status.get("math_active", False)
             },
@@ -524,6 +524,12 @@ class StationControlManager:
                 # Overnight span crossing midnight (e.g. 22:00 to 06:00)
                 return cur_min >= start_min or cur_min < end_min
         return False
+
+    def sync_station_view(self, view: str) -> None:
+        """Called when the ESP32 reports the screen it is actually showing."""
+        view_clean = (view or "").strip().lower()
+        if view_clean and view_clean != self.current_screen_mode:
+            self.current_screen_mode = view_clean
 
     def switch_view(self, view: str, tkb_payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         view_clean = view.strip().lower()

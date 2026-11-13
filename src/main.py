@@ -427,6 +427,12 @@ def on_message(client, userdata, msg):
 
     if topic == config.TOPIC_STATUS_UPDATE:
         device_status.update(data)
+        # The station reports which screen it is really displaying (button
+        # presses, local menu, another app...). Keep the backend in sync so all
+        # clients show the same "current view".
+        reported_view = data.get("active_view")
+        if isinstance(reported_view, str) and reported_view.strip():
+            station_control.sync_station_view(reported_view)
         action = data.get("action")
         if action == "hardware_settings_update":
             station_control.on_hardware_settings_update(data)
