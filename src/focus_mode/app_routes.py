@@ -853,11 +853,16 @@ class AppApiHandler:
 
         try:
             await asyncio.to_thread(spotify_service.set_playback_volume, vol)
-            # Mirror the value to the ESP32 so its on-device menu stays in sync.
-            station_control.set_spotify_volume(vol)
+            # Read back so we can tell the caller whether Spotify really changed.
+            applied = await asyncio.to_thread(spotify_service.get_current_volume)
+            effective = vol if applied is None else int(applied)
+            # Mirror the AUTHORITATIVE value to the ESP32 and every app.
+            station_control.set_spotify_volume(effective)
             return web.json_response({
                 "success": True,
-                "volume": vol
+                "volume": effective,
+                "requested": vol,
+                "applied": applied is None or abs(effective - vol) <= 1,
             })
         except Exception as e:
             logger.error(f"[AppAPI] Failed to set volume: {e}")

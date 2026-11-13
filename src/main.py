@@ -127,6 +127,10 @@ def clean_ascii(text: str) -> str:
 
 def get_server_metrics():
     cpu_pct = psutil.cpu_percent(interval=None)
+    if cpu_pct <= 0.0:
+        # interval=None returns 0.0 until a second call exists; a short blocking
+        # sample avoids reporting a fake 0% CPU to the apps.
+        cpu_pct = psutil.cpu_percent(interval=0.1)
     ram = psutil.virtual_memory()
     uptime_seconds = int(time.time() - psutil.boot_time())
     uptime_hours = uptime_seconds // 3600

@@ -284,7 +284,11 @@ class StationControlManager:
     def get_server_metrics(self) -> Dict[str, Any]:
         try:
             import psutil
+            # interval=None needs a previous sample; use a short blocking sample
+            # when the cached one is not ready so the value is never a fake 0.
             cpu_pct = psutil.cpu_percent(interval=None)
+            if cpu_pct <= 0.0:
+                cpu_pct = psutil.cpu_percent(interval=0.1)
             ram = psutil.virtual_memory()
             disk = psutil.disk_usage('/')
             disk_used_gb = round(disk.used / (1024 ** 3), 1)
@@ -363,11 +367,12 @@ class StationControlManager:
         comp_bat = int(comp_metrics.get("battery", 0))
         comp_name = str(comp_metrics.get("device_name", "Computer"))
 
-        if not is_comp_online:
-            # Never keep displaying the last reading of a machine that is gone.
-            comp_cpu = 0.0
-            comp_ram = 0.0
-            comp_bat = 0
+        # Clamp to a displayable range. Keeping the last known values is better
+        # than showing 0/0/0: the `online` flag already tells clients the machine
+        # is gone, and clamping kills bogus readings such as RAM 441%.
+        comp_cpu = max(0.0, min(100.0, comp_cpu))
+        comp_ram = max(0.0, min(100.0, comp_ram))
+        comp_bat = max(0, min(100, comp_bat))
 
         return {
             "station": {
@@ -524,6 +529,16 @@ class StationControlManager:
                 # Overnight span crossing midnight (e.g. 22:00 to 06:00)
                 return cur_min >= start_min or cur_min < end_min
         return False
+
+    def get_station_snapshot(self) -> Dict[str, Any]:
+        """Station hardware values reported by the ESP32 over MQTT."""
+        with self._config_lock:
+            return {
+                "battery_pct": int(self.device_status.get("battery_pct", 0) or 0),
+                "voltage": float(self.device_status.get("voltage", 0.0) or 0.0),
+                "wifi_rssi": int(self.device_status.get("wifi_rssi", 0) or 0),
+                "current_view": self.device_status.get("active_view") or self.current_screen_mode,
+            }
 
     def sync_station_view(self, view: str) -> None:
         """Called when the ESP32 reports the screen it is actually showing."""

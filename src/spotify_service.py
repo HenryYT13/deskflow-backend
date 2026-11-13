@@ -107,16 +107,25 @@ def set_playback_volume(volume_percent: int):
         if not dev_id:
             logger.warning("[Spotify Control] No Spotify device found; volume not applied.")
             return
+        applied = False
         try:
             sp_client.volume(vol, device_id=dev_id)
-        except Exception:
-            # Make sure the target device really is active, then retry once.
+            applied = True
+        except Exception as first_err:
+            logger.warning(f"[Spotify Control] volume() failed ({first_err}); activating {dev_id}")
             try:
                 sp_client.transfer_playback(device_id=dev_id, force_play=False)
             except Exception:
                 pass
             sp_client.volume(vol, device_id=dev_id)
-        logger.info(f"[Spotify Control] -> Set volume: {vol}%")
+            applied = True
+
+        # Read back: Spotify silently ignores volume on some device types, and a
+        # readback is the only way to know the app slider reflects reality.
+        real = get_current_volume()
+        if _last_playback_data is not None:
+            _last_playback_data["volume_pct"] = real if real is not None else vol
+        logger.info(f"[Spotify Control] -> Set volume: {vol}% (applied={applied}, device={dev_id}, readback={real})")
     except Exception as e:
         logger.error(f"[Spotify Control Error] Set volume: {e}")
 
@@ -133,6 +142,8 @@ def get_current_volume():
                 return max(0, min(100, vol))
     except Exception as e:
         logger.warning(f"[Spotify] Could not read volume: {e}")
+    cached = (_last_playback_data or {}).get("volume_pct")
+    return cached if isinstance(cached, int) else None
     return None
 
 
