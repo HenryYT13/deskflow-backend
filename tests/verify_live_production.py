@@ -1,9 +1,13 @@
 import urllib.request
 import json
 import sys
+import os
 
-BASE = "https://api.10th012013.duckdns.org"
-TOKEN = "00adc391b43120f14b28048869c3097e0a9eef8c0e77726521e4b033e0dbcc7e"
+BASE = "https://df.api.thetechdude.io.vn"
+TOKEN = os.environ.get("DESKFLOW_TEST_TOKEN")
+if not TOKEN:
+    print("Set DESKFLOW_TEST_TOKEN in the environment to run authenticated live checks.", file=sys.stderr)
+    sys.exit(2)
 HEADERS = {
     "Authorization": f"Bearer {TOKEN}",
     "Content-Type": "application/json"

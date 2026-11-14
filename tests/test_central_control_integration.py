@@ -5,7 +5,9 @@ import json
 import tempfile
 import shutil
 
-SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "_server_copy", "src"))
+SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+if not os.path.exists(os.path.join(SRC_DIR, "station_control.py")):
+    SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "_server_copy", "src"))
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 

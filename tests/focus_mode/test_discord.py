@@ -209,7 +209,9 @@ class TestDiscordIntegration(unittest.IsolatedAsyncioTestCase):
         await cmd_pair.callback(pair_interaction)
         pair_interaction.followup.send.assert_called_once()
         args, kwargs = pair_interaction.followup.send.call_args
-        self.assertIn("Mã liên kết thiết bị", args[0])
+        embed = kwargs.get("embed")
+        self.assertIsNotNone(embed)
+        self.assertIn("Mã liên kết", embed.description)
         self.assertTrue(kwargs.get("ephemeral"))
 
         # Pair a mock device

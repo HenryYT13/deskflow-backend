@@ -601,8 +601,8 @@ class FocusService:
         return result
 
     async def unpair_device(self, target_device_id: str) -> bool:
-        await self.auth.revoke_device(target_device_id)
-        return await self.auth.delete_device(target_device_id)
+        """Revoke a device token while retaining its revocation record for auditability."""
+        return await self.auth.revoke_device(target_device_id)
 
     async def delete_device(self, target_device_id: str) -> bool:
         return await self.auth.delete_device(target_device_id)

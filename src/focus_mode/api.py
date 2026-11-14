@@ -35,19 +35,12 @@ ALLOWED_HOSTS: Set[str] = {
     "127.0.0.1:8787",
     "localhost:8787",
     "[::1]:8787",
-    "10th012013.duckdns.org",
-    "focus-api.10th012013.duckdns.org",
-    "10th012013.duckdns.org:8787",
-    "focus-api.10th012013.duckdns.org:8787",
-    "api.10th012013.duckdns.org",
-    "api.10th012013.duckdns.org:8787"
+    "df.api.thetechdude.io.vn"
 }
 
 DEV_ORIGINS: Set[str] = {
     "http://127.0.0.1:8787",
-    "http://localhost:8787",
-    "https://api.10th012013.duckdns.org",
-    "https://focus-api.10th012013.duckdns.org"
+    "http://localhost:8787"
 }
 
 
@@ -583,12 +576,13 @@ class FocusApiHandler:
             except ValueError:
                 data = {}
 
-        target_device_id = data.get("device_id") or current_device.get("device_id")
-        if target_device_id != current_device.get("device_id"):
+        current_device_id = current_device.get("device_id")
+        requested_device_id = data.get("device_id")
+        if requested_device_id and requested_device_id != current_device_id:
             caller_scopes = current_device.get("scopes") or []
-            # Authenticated devices with 'control' or 'focus' are authorized to revoke/unpair devices
-            if "control" not in caller_scopes and "focus" not in caller_scopes:
+            if "control" not in caller_scopes:
                 return error_response("forbidden", status=403)
+        target_device_id = requested_device_id or current_device_id
         revoked = await self.service.unpair_device(target_device_id)
         return web.json_response({
             "success": True,

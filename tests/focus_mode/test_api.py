@@ -28,8 +28,8 @@ import types
 if sys.version_info >= (3, 13) and "audioop" not in sys.modules:
     sys.modules["audioop"] = types.ModuleType("audioop")
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../src")))
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../_server_copy/src")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../src")))
 
 from focus_mode.storage import FocusStorage
 from focus_mode.auth import FocusAuth
@@ -60,8 +60,8 @@ class TestFocusApi(AioHTTPTestCase):
         shutil.rmtree(self.test_dir, ignore_errors=True)
         await super().asyncTearDown()
 
-    async def _pair_helper(self):
-        code, _ = await self.auth.generate_pairing_code()
+    async def _pair_helper(self, scopes=None):
+        code, _ = await self.auth.generate_pairing_code(scopes=scopes)
         resp = await self.client.post(
             "/api/focus/pair",
             json={"code": code, "device_name": "Test Chrome", "platform": "chromium"}
@@ -260,7 +260,7 @@ class TestFocusApi(AioHTTPTestCase):
         data = await resp.json()
         self.assertTrue(data["revoked"])
 
-        # Subsequent authenticated requests fail with 401 token_revoked
+        # The revoked device record remains available for auth to return the precise reason.
         resp = await self.client.get("/api/focus/status", headers=headers)
         self.assertEqual(resp.status, 401)
         data = await resp.json()
@@ -268,13 +268,15 @@ class TestFocusApi(AioHTTPTestCase):
 
     async def test_unpair_cross_device_revocation_forbidden(self):
         # Pair Device A and Device B
-        token_a, dev_a = await self._pair_helper()
-        token_b, dev_b = await self._pair_helper()
+        token_a, dev_a = await self._pair_helper(scopes=["focus"])
+        token_b, dev_b = await self._pair_helper(scopes=["focus"])
 
         headers_a = {"Authorization": f"Bearer {token_a}"}
         headers_b = {"Authorization": f"Bearer {token_b}"}
+        caller = await self.auth.authenticate_token(headers_a["Authorization"])
+        self.assertEqual(caller["scopes"], ["focus"])
 
-        # Device A attempts to revoke Device B -> must be rejected with 403 forbidden
+        # A regular paired focus-scope device must not revoke another device.
         resp = await self.client.post(
             "/api/focus/unpair",
             headers=headers_a,
@@ -302,7 +304,7 @@ class TestFocusApi(AioHTTPTestCase):
         self.assertEqual(resp_a_revoked.status, 401)
 
     async def test_unpair_cross_device_with_control_scope_succeeds(self):
-        # Register Admin/Desktop device with 'control' scope and regular device B
+        # Register an administrative device with control scope and regular device B
         dev_admin = await self.auth.register_authorized_device(
             device_name="Admin Desktop",
             platform="desktop",

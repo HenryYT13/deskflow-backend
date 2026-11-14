@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ================= DISCORD & AI =================
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "MTU1NDQ0OTg0MjY2MTQ5ODk1MQ.GqEsLn.6hilOh8E8RU74QrP0YrC_jszCKOPeKydIbdbqQ")
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 OWNER_USER_ID = int(os.getenv("OWNER_USER_ID", "0"))  # Điền ID tài khoản Discord của bạn
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")  # Điền Groq API Key để sinh Quotes/Morning Briefing
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "")  # Điền nếu muốn quét mưa tự động

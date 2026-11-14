@@ -10,10 +10,12 @@ Verifies:
 import unittest
 import json
 import re
+import os
+from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from unittest.mock import MagicMock
-from src.focus_mode.service import FocusService
-from src.focus_mode.storage import FocusStorage
+from focus_mode.service import FocusService
+from focus_mode.storage import FocusStorage
 
 class TestESP32FocusIntegration(unittest.TestCase):
     def setUp(self):
@@ -165,9 +167,14 @@ class TestESP32FocusIntegration(unittest.TestCase):
         self.assertEqual(status["total_seconds"], 0)
 
     def test_firmware_source_integrity(self):
-        """Audits /home/ttd/Arduino/khkt/khkt.ino to enforce display-only and view integration."""
-        with open("/home/ttd/Arduino/khkt/khkt.ino", "r", encoding="utf-8") as f:
-            code = f.read()
+        """Audit repository firmware source, optionally overridden for developer setups."""
+        firmware_path = Path(os.environ.get(
+            "DESKFLOW_FIRMWARE_PATH",
+            Path(__file__).resolve().parents[1] / ".." / "firmware-esp32" / "khkt" / "khkt.ino",
+        )).resolve()
+        if not firmware_path.is_file():
+            self.skipTest(f"Firmware source unavailable: {firmware_path}")
+        code = firmware_path.read_text(encoding="utf-8")
 
         # 1. Verification of MQTT topic subscription
         self.assertIn('mqtt.subscribe("deskflow/focus/status")', code,
