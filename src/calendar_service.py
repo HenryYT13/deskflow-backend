@@ -953,54 +953,86 @@ class CalendarService:
 
         return await self.sync_events(push_to_station=True)
 
-    def build_station_payload(self, limit: int = 8) -> Dict[str, Any]:
-        """Compact UTF-8 payload pushed to the ESP32 TFT station."""
+    def build_station_payload(self, days_ahead: int = 7, max_events_per_day: int = 5) -> Dict[str, Any]:
+        """Compact day-by-day UTF-8 agenda payload pushed to the ESP32 TFT station."""
         status = self.get_public_status()
-        events = [e for e in status["events"] if e.get("is_upcoming")]
-        if not events:
-            events = status["events"]
-
+        all_events = status["events"]
         now_date = datetime.now(VN_TZ).date()
-        compact: List[Dict[str, Any]] = []
-        for ev in events[:limit]:
+
+        vi_wd = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"]
+        en_wd = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+        def _event_spans_day(ev: Dict[str, Any], target_d: date) -> bool:
             try:
-                ev_d = date.fromisoformat(ev.get("date", ""))
-                delta = (ev_d - now_date).days
-                if delta == 0:
-                    date_lbl = "Hôm nay"
-                elif delta == 1:
-                    date_lbl = "Ngày mai"
-                else:
-                    date_lbl = ev_d.strftime("%d/%m")
+                sd = datetime.fromisoformat(ev["start_iso"]).astimezone(VN_TZ).date()
+                ed = datetime.fromisoformat(ev["end_iso"]).astimezone(VN_TZ).date()
+                if ev.get("all_day"):
+                    end_inc = (datetime.fromisoformat(ev["end_iso"]).astimezone(VN_TZ) - timedelta(seconds=1)).date()
+                    if end_inc < sd:
+                        end_inc = sd
+                    return sd <= target_d <= end_inc
+                # Timed event: show on start date (or spanning dates)
+                return sd <= target_d <= ed if (ed > sd and ev.get("end_time", "") != "00:00") else sd == target_d
             except Exception:
-                date_lbl = ev.get("date", "")
+                return ev.get("date", "") == target_d.isoformat()
 
-            if ev.get("all_day"):
-                time_lbl = "Cả ngày"
+        days_out: List[Dict[str, Any]] = []
+        compact_flat: List[Dict[str, Any]] = []
+
+        for offset in range(max(1, min(days_ahead, 14))):
+            d = now_date + timedelta(days=offset)
+            wd_idx = d.weekday()
+            d_dm = d.strftime("%d/%m")
+            if offset == 0:
+                lbl_vi = f"Hôm nay • {vi_wd[wd_idx]}, {d_dm}"
+                lbl_en = f"Today • {en_wd[wd_idx]}, {d_dm}"
+            elif offset == 1:
+                lbl_vi = f"Ngày mai • {vi_wd[wd_idx]}, {d_dm}"
+                lbl_en = f"Tomorrow • {en_wd[wd_idx]}, {d_dm}"
             else:
-                st = ev.get("start_time", "")
-                et = ev.get("end_time", "")
-                time_lbl = f"{st}-{et}" if et else st
+                lbl_vi = f"{vi_wd[wd_idx]}, {d_dm}"
+                lbl_en = f"{en_wd[wd_idx]}, {d_dm}"
 
-            compact.append(
-                {
-                    "id": str(ev.get("id", ""))[:24],
-                    "title": str(ev.get("title", ""))[:60],
-                    "date": str(ev.get("date", "")),
-                    "date_label": date_lbl,
+            day_events = [e for e in all_events if _event_spans_day(e, d)]
+            ev_items: List[Dict[str, Any]] = []
+            for ev in day_events[:max_events_per_day]:
+                if ev.get("all_day"):
+                    time_lbl = "Cả ngày"
+                else:
+                    st = ev.get("start_time", "")
+                    et = ev.get("end_time", "")
+                    time_lbl = f"{st}-{et}" if et else st
+
+                item = {
+                    "id": str(ev.get("id", ""))[:20],
+                    "title": str(ev.get("title", ""))[:48],
+                    "date": d.isoformat(),
+                    "date_label": "Hôm nay" if offset == 0 else ("Ngày mai" if offset == 1 else d_dm),
                     "time_label": time_lbl,
-                    "location": str(ev.get("location", ""))[:36],
+                    "location": str(ev.get("location", ""))[:28],
                     "all_day": bool(ev.get("all_day", False)),
-                    "is_today": bool(ev.get("is_today", False)),
-                    "is_ongoing": bool(ev.get("is_ongoing", False)),
+                    "is_today": (offset == 0),
+                    "is_ongoing": bool(ev.get("is_ongoing", False)) and (offset == 0),
                 }
-            )
+                ev_items.append(item)
+                if len(compact_flat) < 8:
+                    compact_flat.append(item)
+
+            days_out.append({
+                "date": d.isoformat(),
+                "day_label": lbl_vi,
+                "day_label_en": lbl_en,
+                "is_today": (offset == 0),
+                "total": len(day_events),
+                "events": ev_items,
+            })
 
         return {
             "action": "sync_calendar",
             "connected": bool(status["connected"]),
             "today_count": int(status["today_count"]),
-            "events": compact,
+            "days": days_out,
+            "events": compact_flat,
         }
 
     def push_to_station(self) -> bool:
