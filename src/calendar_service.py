@@ -26,6 +26,12 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
 logger = logging.getLogger("DeskFlow.Calendar")
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
