@@ -10,6 +10,7 @@ from apscheduler.triggers.cron import CronTrigger
 import config
 from timetable import get_dual_day_tkb
 import spotify_service
+from calendar_service import calendar_service
 from focus_mode.auth import parse_iso_utc
 
 logger = logging.getLogger("DeskFlow")
@@ -262,6 +263,16 @@ async def get_weather_forecast(city: Optional[str] = None) -> Dict[str, Any]:
     }
     return res
 
+async def calendar_sync_job():
+    """Đồng bộ Google Calendar (OAuth + iCal) mỗi 5 phút và đẩy lên ESP32."""
+    try:
+        status = await calendar_service.sync_events(push_to_station=True)
+        if status.get("connected"):
+            logger.debug(f"[Calendar Sync] {status.get('upcoming_count', 0)} events synced.")
+    except Exception as e:
+        logger.warning(f"[Calendar Sync Error] {e}")
+
+
 def setup_scheduler(bot, mqtt_client):
     global bot_ref, mqtt_ref, scheduler_instance
     bot_ref = bot
@@ -275,8 +286,11 @@ def setup_scheduler(bot, mqtt_client):
     
     # 2. Cập nhật TKB từ PocketBase mỗi 1 phút
     scheduler.add_job(tkb_auto_sync_job, "interval", minutes=1, id="tkb_sync_job")
+
+    # 3. Đồng bộ Google Calendar mỗi 5 phút
+    scheduler.add_job(calendar_sync_job, "interval", minutes=5, id="calendar_sync_job")
     
-    # 3. Quét mưa theo cấu hình thời gian (Asia/Ho_Chi_Minh)
+    # 4. Quét mưa theo cấu hình thời gian (Asia/Ho_Chi_Minh)
     try:
         import station_control
         alert_time = station_control.station_control.device_settings.get("weather_alert_time", "06:15")
@@ -293,11 +307,12 @@ def setup_scheduler(bot, mqtt_client):
     )
     
     scheduler.start()
-    logger.info(f"[Scheduler] Đã kích hoạt lập lịch: Weather (5m), TKB (1m), Quét mưa ({init_h:02d}:{init_m:02d} Asia/Ho_Chi_Minh).")
+    logger.info(f"[Scheduler] Đã kích hoạt lập lịch: Weather (5m), TKB (1m), Calendar (5m), Quét mưa ({init_h:02d}:{init_m:02d} Asia/Ho_Chi_Minh).")
 
     # Chạy đồng bộ ngay 1 lần khi vừa bật server
     bot.loop.create_task(tkb_auto_sync_job())
     bot.loop.create_task(weather_sync_job())
+    bot.loop.create_task(calendar_sync_job())
 
 
 def setup_focus_scheduler(focus_service, loop=None):

@@ -1,5 +1,6 @@
 import re
 import time
+import threading
 import httpx
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
@@ -16,6 +17,9 @@ cached_lyrics_timeline = []
 # Biến lưu trạng thái nội suy tiến trình thời gian thực
 _last_api_fetch_time = 0.0
 _last_playback_data = None
+_rate_limit_until = 0.0
+_api_lock = threading.Lock()
+_API_POLL_INTERVAL = 6.0  # Poll Spotify every 6s; interpolate progress/lyrics smoothly every 1s
 
 def init_spotify():
     global sp_client
@@ -244,22 +248,37 @@ def _match_lyrics(progress_ms: int, timeline: list):
     curr, nxt, _, _ = _match_lyrics_window(progress_ms, timeline, 5)
     return (curr, nxt)
 
+def _parse_retry_after(err: Exception) -> float:
+    headers = getattr(err, "headers", None) or {}
+    for k, v in headers.items():
+        if str(k).lower() == "retry-after":
+            try:
+                return max(5.0, float(v))
+            except (TypeError, ValueError):
+                pass
+    m = re.search(r"retry\s+(?:will\s+occur\s+)?after[:\s]+(\d+)", str(err), re.IGNORECASE)
+    if m:
+        return max(5.0, float(m.group(1)))
+    return 60.0
+
 def get_current_playing(force_api: bool = False):
     """
-    Chỉ gọi Spotify API thực tế nếu đã cách lần trước >= 1.0 giây.
+    Chỉ gọi Spotify API thực tế nếu đã cách lần trước >= 6.0 giây (và không bị 429).
     Trong các lần gọi trung gian, tự động bù giờ nội suy để trả về tiến trình và lời bài hát chuẩn xác.
     """
-    global sp_client, _last_api_fetch_time, _last_playback_data
+    global sp_client, _last_api_fetch_time, _last_playback_data, _rate_limit_until
     if not sp_client:
         return None
 
     now = time.time()
 
-    # 1. Nếu chưa đủ 4s và đã có dữ liệu cache: Nội suy tiến trình theo đồng hồ máy tính
-    if not force_api and _last_playback_data and (now - _last_api_fetch_time < 1.0):
+    # 0. Nếu đang trong thời gian chờ Retry-After của Spotify 429, không gọi API thêm
+    if now < _rate_limit_until:
+        return _last_playback_data
+
+    # 1. Nếu chưa đủ _API_POLL_INTERVAL và đã có dữ liệu cache: Nội suy tiến trình theo đồng hồ máy tính
+    if not force_api and _last_playback_data and (now - _last_api_fetch_time < _API_POLL_INTERVAL):
         if not _last_playback_data.get("is_playing"):
-            # Still return a normalised copy carrying the latest volume so the
-            # apps stop showing a stale slider when playback is paused.
             paused = dict(_last_playback_data)
             paused["volume"] = (_last_playback_data or {}).get("volume_pct")
             return paused
@@ -280,63 +299,75 @@ def get_current_playing(force_api: bool = False):
         result["active_lyric_index"] = active_idx
         return result
 
-    # 2. Đã đủ >= 1s: Gửi 1 request thực tế lên Spotify API
-    try:
-        playback = sp_client.current_playback()
+    # 2. Đã đủ >= _API_POLL_INTERVAL: Gửi tối đa 1 request thực tế lên Spotify API
+    with _api_lock:
+        now = time.time()
+        if now < _rate_limit_until:
+            return _last_playback_data
+        if not force_api and _last_playback_data and (now - _last_api_fetch_time < _API_POLL_INTERVAL):
+            return _last_playback_data
         _last_api_fetch_time = now
+        try:
+            playback = sp_client.current_playback()
 
-        if not playback or not playback.get("item"):
+            if not playback or not playback.get("item"):
+                _last_playback_data = {
+                    "is_playing": False,
+                    "track": "Tạm dừng / Chưa phát",
+                    "artist": "N/A",
+                    "base_progress_ms": 0,
+                    "progress_ms": 0,
+                    "duration_ms": 1,
+                    "progress_pct": 0,
+                    "lyric_curr": "",
+                    "lyric_next": "",
+                    "lyrics_window": ["", "", "", "", ""],
+                    "active_lyric_index": 2,
+                    "cover_url": None,
+                    "volume": None
+                }
+                return _last_playback_data
+
+            item = playback["item"]
+            progress_ms = playback.get("progress_ms", 0)
+            duration_ms = item.get("duration_ms", 1)
+            progress_pct = int((progress_ms / duration_ms) * 100) if duration_ms > 0 else 0
+            track_name = item.get("name", "Unknown Track")
+            artist_name = ", ".join(a["name"] for a in item.get("artists", []))
+            duration_sec = int(duration_ms / 1000)
+
+            # Lấy ảnh bìa Album
+            images = item.get("album", {}).get("images", [])
+            cover_url = images[0]["url"] if images else None
+
+            # Lấy lời bài hát từ cache hoặc API LrcLib
+            timeline = fetch_live_lyrics(track_name, artist_name, duration_sec)
+            curr_l, next_l, window_l, active_idx = _match_lyrics_window(progress_ms, timeline, 5)
+
             _last_playback_data = {
-                "is_playing": False,
-                "track": "Tạm dừng / Chưa phát",
-                "artist": "N/A",
-                "base_progress_ms": 0,
-                "progress_ms": 0,
-                "duration_ms": 1,
-                "progress_pct": 0,
-                "lyric_curr": "",
-                "lyric_next": "",
-                "lyrics_window": ["", "", "", "", ""],
-                "active_lyric_index": 2,
-                "cover_url": None,
-                "volume": None
+                "is_playing": playback.get("is_playing", False),
+                "track": track_name,
+                "artist": artist_name,
+                "album": item.get("album", {}).get("name", ""),
+                "base_progress_ms": progress_ms,
+                "progress_ms": progress_ms,
+                "duration_ms": duration_ms,
+                "progress_pct": progress_pct,
+                "lyric_curr": curr_l,
+                "lyric_next": next_l,
+                "lyrics_window": window_l,
+                "active_lyric_index": active_idx,
+                "cover_url": cover_url,
+                "volume": (playback.get("device") or {}).get("volume_percent")
             }
             return _last_playback_data
 
-        item = playback["item"]
-        progress_ms = playback.get("progress_ms", 0)
-        duration_ms = item.get("duration_ms", 1)
-        progress_pct = int((progress_ms / duration_ms) * 100) if duration_ms > 0 else 0
-        track_name = item.get("name", "Unknown Track")
-        artist_name = ", ".join(a["name"] for a in item.get("artists", []))
-        duration_sec = int(duration_ms / 1000)
-
-        # Lấy ảnh bìa Album
-        images = item.get("album", {}).get("images", [])
-        cover_url = images[0]["url"] if images else None
-
-        # Lấy lời bài hát từ cache hoặc API LrcLib
-        timeline = fetch_live_lyrics(track_name, artist_name, duration_sec)
-        curr_l, next_l, window_l, active_idx = _match_lyrics_window(progress_ms, timeline, 5)
-
-        _last_playback_data = {
-            "is_playing": playback.get("is_playing", False),
-            "track": track_name,
-            "artist": artist_name,
-            "album": item.get("album", {}).get("name", ""),
-            "base_progress_ms": progress_ms,
-            "progress_ms": progress_ms,
-            "duration_ms": duration_ms,
-            "progress_pct": progress_pct,
-            "lyric_curr": curr_l,
-            "lyric_next": next_l,
-            "lyrics_window": window_l,
-            "active_lyric_index": active_idx,
-            "cover_url": cover_url,
-            "volume": (playback.get("device") or {}).get("volume_percent")
-        }
-        return _last_playback_data
-
-    except Exception as e:
-        logger.warning(f"[Spotify] Lỗi đọc bài đang phát: {e}")
-        return _last_playback_data
+        except Exception as e:
+            http_status = getattr(e, "http_status", None)
+            if http_status == 429 or "429" in str(e):
+                wait_sec = _parse_retry_after(e)
+                _rate_limit_until = time.time() + wait_sec
+                logger.warning(f"[Spotify] Bị rate-limit 429; tạm ngưng gọi Spotify API trong {int(wait_sec)}s.")
+            else:
+                logger.warning(f"[Spotify] Lỗi đọc bài đang phát: {e}")
+            return _last_playback_data

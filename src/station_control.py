@@ -446,6 +446,7 @@ class StationControlManager:
                 "voltage": float(self.device_status.get("voltage", 4.12)),
                 "wifi_rssi": int(self.device_status.get("wifi_rssi", -55)),
                 "current_view": self.device_status.get("active_view") or self.current_screen_mode,
+                "language": self.clock_config.get("language", "vi"),
                 "weather": self.device_status.get("weather", "N/A"),
                 "math_active": self.device_status.get("math_active", False)
             },
@@ -614,7 +615,7 @@ class StationControlManager:
 
     def switch_view(self, view: str, tkb_payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         view_clean = view.strip().lower()
-        valid_views = ("main", "stats", "tkb", "weather", "lyrics", "clock", "notes", "countdown", "focus")
+        valid_views = ("main", "stats", "tkb", "weather", "lyrics", "clock", "notes", "countdown", "focus", "calendar")
         if view_clean not in valid_views:
             raise ValueError(f"Invalid view '{view}'. Must be one of {valid_views}.")
 
@@ -674,6 +675,9 @@ class StationControlManager:
             self.mqtt_publish("deskflow/display", json.dumps({"action": "switch_view", "view": "countdown"}))
         elif view_clean == "focus":
             self.mqtt_publish("deskflow/display", json.dumps({"action": "switch_view", "view": "focus"}))
+        elif view_clean == "calendar":
+            self.sync_calendar_to_station()
+            self.mqtt_publish("deskflow/display", json.dumps({"action": "switch_view", "view": "calendar"}))
 
         return {"success": True, "view": self.current_screen_mode}
 
@@ -683,6 +687,9 @@ class StationControlManager:
     def set_station_language(self, language: str) -> Dict[str, Any]:
         """Switches the ESP32 UI language (menus + screens), not just the clock."""
         lang = "en" if str(language).strip().lower().startswith("en") else "vi"
+        with self._config_lock:
+            self.clock_config["language"] = lang
+            self._save_settings()
         self.mqtt_publish(
             "deskflow/display",
             json.dumps({"action": "station_language", "language": lang}),
@@ -887,6 +894,19 @@ class StationControlManager:
         logger.info(f"[StationControl] Station requested latest clock config: {payload}")
         self.publish_clock_config()
 
+    def on_station_language_update(self, data: Dict[str, Any]) -> None:
+        lang = str(data.get("language", "")).strip().lower()
+        if lang not in ("vi", "en"):
+            return
+        with self._config_lock:
+            if self.clock_config.get("language") != lang:
+                self.clock_config["language"] = lang
+                self.clock_config["config_version"] = int(self.clock_config.get("config_version", 1)) + 1
+                self.clock_config["applied_by_station"] = True
+                self._save_settings()
+                self.publish_clock_config()
+                logger.info(f"[StationControl] Station language synced from ESP32 -> '{lang}' (v{self.clock_config['config_version']})")
+
     def set_clock_style(self, style: str) -> Dict[str, Any]:
         return self.set_clock_config({"style": style})
 
@@ -896,8 +916,8 @@ class StationControlManager:
         for n in self.notes[:10]:
             notes_list.append({
                 "id": n.get("id", ""),
-                "title": clean_ascii(n.get("title", "")),
-                "content": clean_ascii(n.get("content", "")),
+                "title": n.get("title", ""),
+                "content": n.get("content", ""),
                 "is_pinned": (n.get("id") == self.active_note_id)
             })
         payload = {"action": "sync_notes", "notes": notes_list}
@@ -909,7 +929,7 @@ class StationControlManager:
         for c in cd_items[:10]:
             cd_list.append({
                 "id": c.get("id", ""),
-                "title": clean_ascii(c.get("title", "")),
+                "title": c.get("title", ""),
                 "target_date": c.get("target_date", ""),
                 "days_left": c.get("days_left", 0),
                 "is_expired": c.get("is_expired", False),
@@ -917,6 +937,14 @@ class StationControlManager:
             })
         payload = {"action": "sync_countdowns", "countdowns": cd_list}
         return self.mqtt_publish("deskflow/display", json.dumps(payload, ensure_ascii=False))
+
+    def sync_calendar_to_station(self) -> bool:
+        try:
+            from calendar_service import calendar_service
+            return calendar_service.push_to_station()
+        except Exception as e:
+            logger.warning(f"[StationControl] Failed to sync calendar to station: {e}")
+            return False
 
     def publish_hardware_settings(self, force: bool = False) -> bool:
         hw_payload = {
@@ -1100,7 +1128,7 @@ class StationControlManager:
             raise ValueError(f"Note '{note_id}' not found.")
         self.active_note_id = note_id
         self._save_settings()
-        clean_text = clean_ascii(target["content"])
+        clean_text = target["content"]
         self.sync_notes_to_station()
         self.mqtt_publish("deskflow/display", json.dumps({"action": "sticky_note", "note": clean_text, "id": note_id}, ensure_ascii=False))
         item = dict(target)
@@ -1204,7 +1232,7 @@ class StationControlManager:
         payload = {
             "action": "exam_countdown",
             "id": countdown_id,
-            "name": clean_ascii(target["title"]),
+            "name": target["title"],
             "days_left": target["days_left"],
             "is_expired": target["is_expired"]
         }
@@ -1253,7 +1281,7 @@ class StationControlManager:
             except Exception as e:
                 logger.warning(f"[StationControl] Groq quote error: {e}. Using fallback.")
 
-        clean_q = clean_ascii(quote)
+        clean_q = quote
         self.mqtt_publish("deskflow/quote", json.dumps({"action": "quote_update", "quote": clean_q}, ensure_ascii=False))
         return {
             "success": True,
@@ -1271,7 +1299,7 @@ class StationControlManager:
             "action": "start_timer",
             "seconds": total_seconds,
             "label": duration,
-            "note": clean_ascii(note)
+            "note": note
         }
         self.mqtt_publish(getattr(config, "TOPIC_TIMER", "deskflow/timer"), json.dumps(payload, ensure_ascii=False))
         return {

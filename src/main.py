@@ -153,44 +153,44 @@ async def build_tkb_payload():
         today = dual_tkb["today"]
         tom = dual_tkb.get("tomorrow", {})
 
-        today_name = clean_ascii(today.get("day", "Thu 4"))
+        today_name = today.get("day", "Thứ 4")
 
-        clean_morning = [clean_ascii(s.split(": ")[-1]) for s in today.get("morning", []) if s.strip()]
-        clean_afternoon = [clean_ascii(s.split(": ")[-1]) for s in today.get("afternoon", []) if s.strip()]
+        clean_morning = [s.split(": ")[-1].strip() for s in today.get("morning", []) if s.strip()]
+        clean_afternoon = [s.split(": ")[-1].strip() for s in today.get("afternoon", []) if s.strip()]
         has_afternoon = bool(today.get("has_afternoon", False)) and len(clean_afternoon) > 0
 
-        dp_sang = clean_ascii(today.get("dp_sang", "Tu do"))
-        dp_chieu = clean_ascii(today.get("dp_chieu", ""))
+        dp_sang = today.get("dp_sang", "Tự do")
+        dp_chieu = today.get("dp_chieu", "")
 
         if has_afternoon:
             if dp_chieu and dp_chieu != dp_sang:
-                uniform_str = f"Sang: {dp_sang}, Chieu: {dp_chieu}"
+                uniform_str = f"Sáng: {dp_sang}, Chiều: {dp_chieu}"
             else:
-                uniform_str = f"{dp_sang} (chung ca ngay)"
+                uniform_str = f"{dp_sang} (chung cả ngày)"
         else:
             uniform_str = dp_sang
 
-        clean_tom_m = [clean_ascii(s.split(": ")[-1]) for s in tom.get("morning", []) if s.strip()]
-        clean_tom_a = [clean_ascii(s.split(": ")[-1]) for s in tom.get("afternoon", []) if s.strip()]
+        clean_tom_m = [s.split(": ")[-1].strip() for s in tom.get("morning", []) if s.strip()]
+        clean_tom_a = [s.split(": ")[-1].strip() for s in tom.get("afternoon", []) if s.strip()]
         tom_has_afternoon = bool(tom.get("has_afternoon", False)) and len(clean_tom_a) > 0
-        tom_dp_sang = clean_ascii(tom.get("dp_sang", "Tu do"))
-        tom_dp_chieu = clean_ascii(tom.get("dp_chieu", ""))
+        tom_dp_sang = tom.get("dp_sang", "Tự do")
+        tom_dp_chieu = tom.get("dp_chieu", "")
 
         if tom_has_afternoon:
             if tom_dp_chieu and tom_dp_chieu != tom_dp_sang:
-                tom_uniform_str = f"Sang: {tom_dp_sang}, Chieu: {tom_dp_chieu}"
+                tom_uniform_str = f"Sáng: {tom_dp_sang}, Chiều: {tom_dp_chieu}"
             else:
-                tom_uniform_str = f"{tom_dp_sang} (chung ca ngay)"
+                tom_uniform_str = f"{tom_dp_sang} (chung cả ngày)"
         else:
             tom_uniform_str = tom_dp_sang
 
-        tom_day_label = clean_ascii(tom.get("display_day", tom.get("day", "Ngay mai")))
+        tom_day_label = tom.get("display_day", tom.get("day", "Ngày mai"))
 
         return {
             "action": "sync_data",
             "view": "tkb",
             "day_name": today_name,
-            "morning": ", ".join(clean_morning) if clean_morning else "Nghi hoc",
+            "morning": ", ".join(clean_morning) if clean_morning else "Nghỉ học",
             "has_afternoon": has_afternoon,
             "afternoon": ", ".join(clean_afternoon) if has_afternoon else "",
             "uniform": uniform_str,
@@ -322,7 +322,7 @@ async def handle_pogo_action(action: str):
     global current_screen_mode
 
     if action == "hold_play":
-        modes_cycle = ["main", "stats", "tkb", "weather", "lyrics", "notes", "countdown", "clock"]
+        modes_cycle = ["main", "stats", "tkb", "calendar", "weather", "lyrics", "notes", "countdown", "clock"]
         try:
             next_idx = (modes_cycle.index(current_screen_mode) + 1) % len(modes_cycle)
         except ValueError:
@@ -376,6 +376,10 @@ async def handle_pogo_action(action: str):
             station_control.sync_countdowns_to_station()
         elif current_screen_mode == "clock":
             payload = {"action": "switch_view", "view": "clock"}
+            mqtt_publish_logged("deskflow/display", json.dumps(payload, ensure_ascii=False))
+        elif current_screen_mode == "calendar":
+            station_control.sync_calendar_to_station()
+            payload = {"action": "switch_view", "view": "calendar"}
             mqtt_publish_logged("deskflow/display", json.dumps(payload, ensure_ascii=False))
 
     elif action == "refresh_tkb":
@@ -444,6 +448,8 @@ def on_message(client, userdata, msg):
             station_control.on_hardware_settings_ack(data)
         elif action == "hardware_settings_request":
             station_control.on_hardware_settings_request(data)
+        elif action == "station_language_update":
+            station_control.on_station_language_update(data)
     elif topic == config.TOPIC_MATH_TRIGGER:
         device_status["math_active"] = True
         device_status["current_math_answer"] = str(data.get("answer"))
@@ -554,16 +560,16 @@ class DeskFlowBot(discord.Client):
             try:
                 sp_data = await asyncio.to_thread(spotify_service.get_current_playing)
                 if sp_data and sp_data.get("is_playing"):
-                    curr_lyric = clean_ascii(sp_data.get("lyric_curr", ""))
+                    curr_lyric = sp_data.get("lyric_curr", "") or ""
                     if curr_lyric != last_sent_lyric or current_screen_mode == "lyrics":
                         last_sent_lyric = curr_lyric
                         payload = {
                             "action": "spotify_update",
-                            "track": clean_ascii(sp_data.get("track", "")),
-                            "artist": clean_ascii(sp_data.get("artist", "")),
+                            "track": sp_data.get("track", "") or "",
+                            "artist": sp_data.get("artist", "") or "",
                             "progress_pct": sp_data.get("progress_pct", 0),
                             "lyric_curr": curr_lyric,
-                            "lyric_next": clean_ascii(sp_data.get("lyric_next", "")),
+                            "lyric_next": sp_data.get("lyric_next", "") or "",
                             "volume": sp_data.get("volume"),
                             "is_playing": True
                         }
@@ -733,7 +739,7 @@ async def cmd_close_tkb(interaction: discord.Interaction):
 async def cmd_timer(interaction: discord.Interaction, duration: str, note: str = "Tập trung học"):
     d_clean = duration.strip().lower()
     total_seconds = int(d_clean[:-1]) * 60 if d_clean.endswith("m") else (int(d_clean[:-1]) * 3600 if d_clean.endswith("h") else int(d_clean) * 60)
-    payload = json.dumps({"action": "start_timer", "seconds": total_seconds, "label": duration, "note": clean_ascii(note)}, ensure_ascii=False)
+    payload = json.dumps({"action": "start_timer", "seconds": total_seconds, "label": duration, "note": note}, ensure_ascii=False)
     mqtt_publish_logged(config.TOPIC_TIMER, payload)
 
     embed = discord.Embed(title="⏳ Bắt Đầu Hẹn Giờ Tập Trung", color=0xE67E22)
@@ -756,7 +762,7 @@ async def cmd_ki_thi(interaction: discord.Interaction, ten_ky_thi: str, ngay_thi
 
         payload = {
             "action": "exam_countdown",
-            "name": clean_ascii(ten_ky_thi),
+            "name": ten_ky_thi,
             "date": ngay_thi.strip(),
             "days_left": days_left
         }
@@ -820,7 +826,7 @@ async def cmd_clock_style(interaction: discord.Interaction, style: app_commands.
 @app_commands.describe(noi_dung="Nội dung lời nhắn muốn hiển thị")
 async def cmd_say(interaction: discord.Interaction, noi_dung: str):
     await interaction.response.defer(ephemeral=True)
-    clean_msg = clean_ascii(noi_dung)
+    clean_msg = noi_dung.strip()
     payload = {"action": "sticky_note", "note": clean_msg}
     mqtt_publish_logged("deskflow/display", json.dumps(payload, ensure_ascii=False))
     await interaction.followup.send(f"📌 Đã ghim giấy nhớ lên màn hình: *\"{clean_msg}\"*", ephemeral=True)
@@ -869,7 +875,7 @@ async def cmd_quote(
     await interaction.response.defer(ephemeral=True)
     char_limit = max(20, min(150, limit if limit else 75))
     quote = generate_groq_quote(topic, max_chars=char_limit)
-    clean_q = clean_ascii(quote)
+    clean_q = quote
 
     payload = {"action": "quote_update", "quote": clean_q}
     mqtt_publish_logged("deskflow/quote", json.dumps(payload, ensure_ascii=False))
@@ -1043,22 +1049,22 @@ async def cmd_tkb(interaction: discord.Interaction, day: app_commands.Choice[str
 
         embed.set_footer(text=f"Tuần {tkb_info.get('week_number', 'N/A')} • DeskFlow PocketBase Sync")
 
-        clean_m = [clean_ascii(s.split(": ")[-1]) for s in morning_list if s.strip()]
-        clean_a = [clean_ascii(s.split(": ")[-1]) for s in afternoon_list if s.strip()]
+        clean_m = [s.split(": ")[-1].strip() for s in morning_list if s.strip()]
+        clean_a = [s.split(": ")[-1].strip() for s in afternoon_list if s.strip()]
         has_a = bool(tkb_info.get("has_afternoon", False)) and len(clean_a) > 0
 
-        dp_s_clean = clean_ascii(dp_sang)
-        dp_c_clean = clean_ascii(dp_chieu)
+        dp_s_clean = dp_sang
+        dp_c_clean = dp_chieu
         if has_a:
-            uniform_str = f"Sang: {dp_s_clean}, Chieu: {dp_c_clean}" if (dp_c_clean and dp_c_clean != dp_s_clean) else f"{dp_s_clean} (chung ca ngay)"
+            uniform_str = f"Sáng: {dp_s_clean}, Chiều: {dp_c_clean}" if (dp_c_clean and dp_c_clean != dp_s_clean) else f"{dp_s_clean} (chung cả ngày)"
         else:
             uniform_str = dp_s_clean
 
         mqtt_payload = {
             "action": "switch_view",
             "view": "tkb",
-            "day_name": clean_ascii(day.value),
-            "morning": ", ".join(clean_m) if clean_m else "Nghi hoc",
+            "day_name": day.value,
+            "morning": ", ".join(clean_m) if clean_m else "Nghỉ học",
             "has_afternoon": has_a,
             "afternoon": ", ".join(clean_a) if has_a else "",
             "uniform": uniform_str
@@ -1075,6 +1081,7 @@ async def cmd_tkb(interaction: discord.Interaction, day: app_commands.Choice[str
     app_commands.Choice(name="Màn hình chính (Main)", value="main"),
     app_commands.Choice(name="Phần cứng (Stats)", value="stats"),
     app_commands.Choice(name="Thời khóa biểu (TKB)", value="tkb"),
+    app_commands.Choice(name="Lịch Google (Calendar)", value="calendar"),
     app_commands.Choice(name="Thời tiết (Weather)", value="weather"),
     app_commands.Choice(name="Lời bài hát (Lyrics)", value="lyrics")
 ])
@@ -1116,6 +1123,9 @@ async def cmd_view(interaction: discord.Interaction, screen: app_commands.Choice
     elif current_screen_mode == "lyrics":
         payload = {"action": "switch_view", "view": "lyrics", "curr": "Dang dong bo...", "next": ""}
         mqtt_publish_logged("deskflow/display", json.dumps(payload, ensure_ascii=False))
+    elif current_screen_mode == "calendar":
+        station_control.sync_calendar_to_station()
+        mqtt_publish_logged("deskflow/display", json.dumps({"action": "switch_view", "view": "calendar"}, ensure_ascii=False))
 
     await interaction.followup.send(f"📺 Đã chuyển trạm sang màn hình: **{screen.name}**", ephemeral=True)
 

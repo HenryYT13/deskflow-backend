@@ -16,6 +16,7 @@ from typing import Dict, Any, Optional
 import config
 import spotify_service
 import timetable
+from calendar_service import calendar_service, render_oauth_result_html
 from alarm_engine import alarm_engine, AlarmPublishError
 from station_control import station_control
 from .auth import FocusAuth, AuthError
@@ -912,6 +913,151 @@ class AppApiHandler:
             "scopes": scopes
         })
 
+    # --- Google Calendar Integration (OAuth 2.0 + Private iCal) ---
+    async def handle_calendar_status(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        status = calendar_service.get_public_status()
+        return web.json_response({"success": True, "data": status, **status})
+
+    async def handle_calendar_events(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        refresh = str(request.query.get("refresh", "")).lower() in ("1", "true", "yes")
+        days_raw = request.query.get("days", "30")
+        try:
+            days = max(1, min(90, int(days_raw)))
+        except ValueError:
+            days = 30
+
+        status = calendar_service.get_public_status()
+        if refresh:
+            status = await calendar_service.sync_events(days_ahead=days, push_to_station=True)
+        return web.json_response({
+            "success": True,
+            "events": status.get("events", []),
+            "data": status,
+            "connected": status.get("connected", False),
+            "oauth_connected": status.get("oauth_connected", False),
+            "ical_connected": status.get("ical_connected", False),
+            "last_sync_at": status.get("last_sync_at"),
+            "last_error": status.get("last_error"),
+        })
+
+    async def handle_calendar_config(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        data = await self._parse_json(request)
+        try:
+            calendar_service.update_config(
+                ical_url=data.get("ical_url"),
+                google_client_id=data.get("google_client_id"),
+                google_client_secret=data.get("google_client_secret"),
+                google_redirect_uri=data.get("google_redirect_uri"),
+                selected_calendar_id=data.get("selected_calendar_id"),
+            )
+            status = await calendar_service.sync_events(push_to_station=True)
+            return web.json_response({"success": True, "data": status, **status})
+        except ValueError as e:
+            return error_response(str(e), status=400)
+        except Exception as e:
+            logger.error(f"[AppAPI] Calendar config update failed: {e}")
+            return error_response("calendar_config_failed", status=500)
+
+    async def handle_calendar_sync(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        try:
+            status = await calendar_service.sync_events(push_to_station=True)
+            return web.json_response({"success": True, "data": status, **status})
+        except Exception as e:
+            logger.error(f"[AppAPI] Calendar sync error: {e}")
+            return error_response(f"calendar_sync_failed: {e}", status=500)
+
+    async def handle_calendar_create_event(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        data = await self._parse_json(request)
+        try:
+            res = await calendar_service.create_event(
+                title=str(data.get("title") or ""),
+                date_str=str(data.get("date") or ""),
+                start_time=str(data.get("start_time") or ""),
+                end_time=str(data.get("end_time") or ""),
+                all_day=bool(data.get("all_day", False)),
+                location=str(data.get("location") or ""),
+                description=str(data.get("description") or ""),
+                calendar_id=data.get("calendar_id"),
+            )
+            status = res["status"]
+            return web.json_response({
+                "success": True,
+                "created_id": res.get("created_id", ""),
+                "data": status,
+                **status,
+            })
+        except PermissionError as e:
+            return error_response(str(e), status=400)
+        except ValueError as e:
+            return error_response(str(e), status=400)
+        except Exception as e:
+            logger.error(f"[AppAPI] Create Google Calendar event failed: {e}")
+            return error_response(f"calendar_create_failed: {e}", status=500)
+
+    async def handle_calendar_delete_event(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        event_id = request.match_info.get("id", "")
+        cal_id = request.query.get("calendar_id")
+        try:
+            status = await calendar_service.delete_event(event_id=event_id, calendar_id=cal_id)
+            return web.json_response({"success": True, "data": status, **status})
+        except PermissionError as e:
+            return error_response(str(e), status=400)
+        except ValueError as e:
+            return error_response(str(e), status=400)
+        except Exception as e:
+            logger.error(f"[AppAPI] Delete Google Calendar event failed: {e}")
+            return error_response(f"calendar_delete_failed: {e}", status=500)
+
+    async def handle_calendar_oauth_start(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        try:
+            data = calendar_service.build_oauth_start_url()
+            return web.json_response({"success": True, **data})
+        except ValueError as e:
+            return error_response(str(e), status=400)
+
+    async def handle_calendar_oauth_callback(self, request: web.Request) -> web.Response:
+        err = request.query.get("error")
+        if err:
+            return web.Response(
+                text=render_oauth_result_html(False, error=err),
+                content_type="text/html",
+                status=400,
+            )
+        code = request.query.get("code", "")
+        state = request.query.get("state", "")
+        if not code or not state:
+            return web.Response(
+                text=render_oauth_result_html(False, error="missing_code_or_state"),
+                content_type="text/html",
+                status=400,
+            )
+        try:
+            status = await calendar_service.complete_oauth_callback(code=code, state=state)
+            return web.Response(
+                text=render_oauth_result_html(True, email=status.get("connected_email", "")),
+                content_type="text/html",
+            )
+        except Exception as e:
+            logger.error(f"[AppAPI] Google Calendar OAuth callback error: {e}")
+            return web.Response(
+                text=render_oauth_result_html(False, error=str(e)),
+                content_type="text/html",
+                status=400,
+            )
+
+    async def handle_calendar_oauth_disconnect(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        status = calendar_service.disconnect_oauth()
+        calendar_service.push_to_station()
+        return web.json_response({"success": True, "data": status, **status})
+
 
 def register_app_routes(app: web.Application, auth: FocusAuth) -> None:
     handler = AppApiHandler(auth=auth)
@@ -995,6 +1141,17 @@ def register_app_routes(app: web.Application, auth: FocusAuth) -> None:
     app.router.add_get("/api/app/spotify/status", handler.handle_spotify_status)
     app.router.add_post("/api/app/spotify/playback", handler.handle_spotify_playback)
     app.router.add_post("/api/app/spotify/volume", handler.handle_spotify_volume)
+
+    # Google Calendar (OAuth 2.0 + Private iCal)
+    app.router.add_get("/api/app/calendar/status", handler.handle_calendar_status)
+    app.router.add_get("/api/app/calendar/events", handler.handle_calendar_events)
+    app.router.add_post("/api/app/calendar/config", handler.handle_calendar_config)
+    app.router.add_post("/api/app/calendar/sync", handler.handle_calendar_sync)
+    app.router.add_post("/api/app/calendar/events", handler.handle_calendar_create_event)
+    app.router.add_delete("/api/app/calendar/events/{id}", handler.handle_calendar_delete_event)
+    app.router.add_post("/api/app/calendar/oauth/start", handler.handle_calendar_oauth_start)
+    app.router.add_get("/api/app/calendar/oauth/callback", handler.handle_calendar_oauth_callback)
+    app.router.add_post("/api/app/calendar/oauth/disconnect", handler.handle_calendar_oauth_disconnect)
 
     # Also register CORS options preflight for /api/app/*
     async def options_app_handler(request: web.Request) -> web.Response:
