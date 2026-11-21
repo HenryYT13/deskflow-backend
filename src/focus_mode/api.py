@@ -114,10 +114,15 @@ def validate_origin(origin: Optional[str]) -> Optional[str]:
 
     canonical = f"{scheme}://{parsed.netloc}"
 
-    # 1. Exact match against explicitly configured origins
+    # 1. Exact match (or *.domain wildcard) against explicitly configured origins
     allowed = get_allowed_origins()
     if canonical in allowed:
         return canonical
+    for pat in allowed:
+        if "*." in pat:
+            p_parsed = urllib.parse.urlsplit(pat)
+            if p_parsed.scheme.lower() == scheme and parsed.netloc.lower().endswith(p_parsed.netloc.lower().lstrip("*")):
+                return canonical
 
     # 2. Chrome Extension ID verification
     if scheme == "chrome-extension":
@@ -197,7 +202,7 @@ async def cors_middleware(request: web.Request, handler):
         resp = web.Response(status=204)
         if allow_origin:
             resp.headers["Access-Control-Allow-Origin"] = allow_origin
-            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, OPTIONS"
+            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
             resp.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, Accept"
             resp.headers["Access-Control-Max-Age"] = "86400"
             resp.headers["Vary"] = "Origin"
@@ -232,7 +237,7 @@ async def cors_middleware(request: web.Request, handler):
 
     if allow_origin and response is not None:
         response.headers["Access-Control-Allow-Origin"] = allow_origin
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, OPTIONS"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, Accept"
         response.headers["Vary"] = "Origin"
 
