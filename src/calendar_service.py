@@ -10,6 +10,7 @@ Caches normalized events locally and exposes compact summaries for the ESP32 sta
 from __future__ import annotations
 
 import asyncio
+import calendar as py_calendar
 import html
 import json
 import logging
@@ -781,11 +782,21 @@ class CalendarService:
             raise RuntimeError(f"iCal fetch failed ({resp.status_code})")
         return parse_ics_events(resp.text, win_start, win_end)
 
-    async def sync_events(self, days_ahead: int = 30, push_to_station: bool = True) -> Dict[str, Any]:
+    async def sync_events(self, days_ahead: int = 35, push_to_station: bool = True) -> Dict[str, Any]:
         async with self._sync_async_lock:
             now = datetime.now(VN_TZ)
-            win_start = datetime.combine(now.date(), dt_time.min, tzinfo=VN_TZ)
-            win_end = win_start + timedelta(days=max(1, min(days_ahead, 90)))
+            # Fetch from the 1st of the current month so full month-grid view has complete data
+            month_start = now.date().replace(day=1)
+            win_start = datetime.combine(month_start, dt_time.min, tzinfo=VN_TZ)
+            # Always cover at least through the end of next month
+            if now.month == 12:
+                next_y, next_m = now.year + 1, 1
+            else:
+                next_y, next_m = now.year, now.month + 1
+            next_last_day = py_calendar.monthrange(next_y, next_m)[1]
+            min_end_date = date(next_y, next_m, next_last_day)
+            target_end_date = max(min_end_date, now.date() + timedelta(days=max(1, min(days_ahead, 90))))
+            win_end = datetime.combine(target_end_date, dt_time(23, 59, 59), tzinfo=VN_TZ)
 
             with self._lock:
                 has_oauth = bool(self.config.get("google_refresh_token"))
@@ -850,7 +861,7 @@ class CalendarService:
             with self._lock:
                 # If both failed and we had cached events, keep cache if transient error; if at least 1 succeeded, update cache
                 if collected or not errors:
-                    self.config["events_cache"] = collected[:150]
+                    self.config["events_cache"] = collected[:250]
                 self.config["last_sync_at"] = now.isoformat()
                 self.config["last_error"] = "; ".join(errors) if errors else None
                 self._save()
@@ -953,16 +964,26 @@ class CalendarService:
 
         return await self.sync_events(push_to_station=True)
 
-    def build_station_payload(self, days_ahead: int = 7, max_events_per_day: int = 5) -> Dict[str, Any]:
-        """Compact day-by-day UTF-8 agenda payload pushed to the ESP32 TFT station."""
+    def build_station_payload(self, max_events: int = 90) -> Dict[str, Any]:
+        """Compact 2-month Month-Grid + Day-Events UTF-8 payload pushed to ESP32 (< 7.5 KB)."""
         status = self.get_public_status()
         all_events = status["events"]
         now_date = datetime.now(VN_TZ).date()
 
-        vi_wd = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"]
-        en_wd = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        cur_y, cur_m = now_date.year, now_date.month
+        cur_first = date(cur_y, cur_m, 1)
+        cur_first_wd = (cur_first.weekday() + 1) % 7  # 0=Sun..6=Sat (matches Google Calendar)
+        cur_dim = py_calendar.monthrange(cur_y, cur_m)[1]
 
-        def _event_spans_day(ev: Dict[str, Any], target_d: date) -> bool:
+        if cur_m == 12:
+            nxt_y, nxt_m = cur_y + 1, 1
+        else:
+            nxt_y, nxt_m = cur_y, cur_m + 1
+        nxt_first = date(nxt_y, nxt_m, 1)
+        nxt_first_wd = (nxt_first.weekday() + 1) % 7
+        nxt_dim = py_calendar.monthrange(nxt_y, nxt_m)[1]
+
+        def _event_dates_in_window(ev: Dict[str, Any]) -> List[date]:
             try:
                 sd = datetime.fromisoformat(ev["start_iso"]).astimezone(VN_TZ).date()
                 ed = datetime.fromisoformat(ev["end_iso"]).astimezone(VN_TZ).date()
@@ -970,70 +991,71 @@ class CalendarService:
                     end_inc = (datetime.fromisoformat(ev["end_iso"]).astimezone(VN_TZ) - timedelta(seconds=1)).date()
                     if end_inc < sd:
                         end_inc = sd
-                    return sd <= target_d <= end_inc
-                # Timed event: show on start date (or spanning dates)
-                return sd <= target_d <= ed if (ed > sd and ev.get("end_time", "") != "00:00") else sd == target_d
-            except Exception:
-                return ev.get("date", "") == target_d.isoformat()
-
-        days_out: List[Dict[str, Any]] = []
-        compact_flat: List[Dict[str, Any]] = []
-
-        for offset in range(max(1, min(days_ahead, 14))):
-            d = now_date + timedelta(days=offset)
-            wd_idx = d.weekday()
-            d_dm = d.strftime("%d/%m")
-            if offset == 0:
-                lbl_vi = f"Hôm nay • {vi_wd[wd_idx]}, {d_dm}"
-                lbl_en = f"Today • {en_wd[wd_idx]}, {d_dm}"
-            elif offset == 1:
-                lbl_vi = f"Ngày mai • {vi_wd[wd_idx]}, {d_dm}"
-                lbl_en = f"Tomorrow • {en_wd[wd_idx]}, {d_dm}"
-            else:
-                lbl_vi = f"{vi_wd[wd_idx]}, {d_dm}"
-                lbl_en = f"{en_wd[wd_idx]}, {d_dm}"
-
-            day_events = [e for e in all_events if _event_spans_day(e, d)]
-            ev_items: List[Dict[str, Any]] = []
-            for ev in day_events[:max_events_per_day]:
-                if ev.get("all_day"):
-                    time_lbl = "Cả ngày"
                 else:
-                    st = ev.get("start_time", "")
-                    et = ev.get("end_time", "")
-                    time_lbl = f"{st}-{et}" if et else st
+                    end_inc = ed if (ed > sd and ev.get("end_time", "") != "00:00") else sd
+                dates: List[date] = []
+                cur = max(sd, cur_first)
+                limit_end = min(end_inc, date(nxt_y, nxt_m, nxt_dim))
+                while cur <= limit_end and len(dates) < 31:
+                    dates.append(cur)
+                    cur += timedelta(days=1)
+                return dates
+            except Exception:
+                try:
+                    d_only = date.fromisoformat(ev.get("date", ""))
+                    return [d_only]
+                except Exception:
+                    return []
 
-                item = {
-                    "id": str(ev.get("id", ""))[:20],
-                    "title": str(ev.get("title", ""))[:48],
-                    "date": d.isoformat(),
-                    "date_label": "Hôm nay" if offset == 0 else ("Ngày mai" if offset == 1 else d_dm),
-                    "time_label": time_lbl,
-                    "location": str(ev.get("location", ""))[:28],
-                    "all_day": bool(ev.get("all_day", False)),
-                    "is_today": (offset == 0),
-                    "is_ongoing": bool(ev.get("is_ongoing", False)) and (offset == 0),
-                }
-                ev_items.append(item)
-                if len(compact_flat) < 8:
-                    compact_flat.append(item)
+        compact_events: List[Dict[str, Any]] = []
+        for ev in all_events:
+            if len(compact_events) >= max_events:
+                break
+            if ev.get("all_day"):
+                time_lbl = "Cả ngày"
+            else:
+                st = ev.get("start_time", "")
+                et = ev.get("end_time", "")
+                time_lbl = f"{st}-{et}" if et else st
 
-            days_out.append({
-                "date": d.isoformat(),
-                "day_label": lbl_vi,
-                "day_label_en": lbl_en,
-                "is_today": (offset == 0),
-                "total": len(day_events),
-                "events": ev_items,
-            })
+            title = str(ev.get("title", ""))[:38]
+            loc = str(ev.get("location", ""))[:24]
 
-        return {
+            for d_obj in _event_dates_in_window(ev):
+                if (d_obj.year, d_obj.month) not in ((cur_y, cur_m), (nxt_y, nxt_m)):
+                    continue
+                compact_events.append({
+                    "y": d_obj.year,
+                    "m": d_obj.month,
+                    "d": d_obj.day,
+                    "t": time_lbl,
+                    "s": title,
+                    "l": loc,
+                })
+                if len(compact_events) >= max_events:
+                    break
+
+        payload: Dict[str, Any] = {
             "action": "sync_calendar",
             "connected": bool(status["connected"]),
             "today_count": int(status["today_count"]),
-            "days": days_out,
-            "events": compact_flat,
+            "year": cur_y,
+            "month": cur_m,
+            "today": now_date.day,
+            "first_wd": cur_first_wd,
+            "days_in_month": cur_dim,
+            "next_year": nxt_y,
+            "next_month": nxt_m,
+            "next_first_wd": nxt_first_wd,
+            "next_days_in_month": nxt_dim,
+            "events": compact_events,
         }
+
+        # Ensure MQTT packet never exceeds ESP32's 8192-byte buffer
+        while len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > 7200 and payload["events"]:
+            payload["events"].pop()
+
+        return payload
 
     def push_to_station(self) -> bool:
         try:
