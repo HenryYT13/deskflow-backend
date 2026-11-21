@@ -29,7 +29,7 @@ import httpx
 logger = logging.getLogger("DeskFlow.Calendar")
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
-DEFAULT_REDIRECT_URI = "https://10th012013.duckdns.org/api/app/calendar/oauth/callback"
+DEFAULT_REDIRECT_URI = "https://df.api.thetechdude.io.vn/api/app/calendar/oauth/callback"
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_API_BASE = "https://www.googleapis.com/calendar/v3"
