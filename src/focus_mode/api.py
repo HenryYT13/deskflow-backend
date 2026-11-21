@@ -209,6 +209,13 @@ async def cors_middleware(request: web.Request, handler):
         return resp
 
     try:
+        max_bytes = 2 * 1024 * 1024 if request.path.startswith("/api/app/control/melody/") else 16384
+        if request.content_length is not None and request.content_length > max_bytes:
+            raise web.HTTPRequestEntityTooLarge(max_size=max_bytes, actual_size=request.content_length)
+        if max_bytes == 16384 and request.can_read_body:
+            raw_body = await request.read()
+            if len(raw_body) > max_bytes:
+                raise web.HTTPRequestEntityTooLarge(max_size=max_bytes, actual_size=len(raw_body))
         response = await handler(request)
     except web.HTTPException as ex:
         # Wrap HTTPException if not already JSON
@@ -657,8 +664,8 @@ class FocusApiHandler:
 
 
 def create_app(service: FocusService) -> web.Application:
-    # 16 KB body limit
-    app = web.Application(client_max_size=16384, middlewares=[host_validation_middleware, cors_middleware])
+    # 2 MB framework limit; non-melody endpoints enforce 16 KB inside cors_middleware
+    app = web.Application(client_max_size=2 * 1024 * 1024, middlewares=[host_validation_middleware, cors_middleware])
     handler = FocusApiHandler(service)
 
     async def options_handler(request: web.Request) -> web.Response:
