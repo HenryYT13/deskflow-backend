@@ -260,7 +260,19 @@ class AppApiHandler:
     async def handle_lamp_dim(self, request: web.Request) -> web.Response:
         await self._authenticate(request)
         data = await self._parse_json(request)
-        raw_led = data.get("led") if data.get("led") is not None else (data.get("led_bright") if data.get("led_bright") is not None else data.get("led_brightness"))
+        raw_led = (
+            data.get("led")
+            if data.get("led") is not None
+            else (
+                data.get("led_bright")
+                if data.get("led_bright") is not None
+                else (
+                    data.get("led_brightness")
+                    if data.get("led_brightness") is not None
+                    else data.get("brightness")
+                )
+            )
+        )
         raw_screen = data.get("screen") if data.get("screen") is not None else (data.get("screen_bright") if data.get("screen_bright") is not None else data.get("screen_brightness"))
 
         led = None
