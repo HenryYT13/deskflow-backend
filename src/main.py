@@ -419,6 +419,7 @@ def on_connect(client, userdata, flags, rc, properties=None):
         client.subscribe("deskflow/clock_style_request")
         client.subscribe("deskflow/hardware_settings_ack")
         client.subscribe("deskflow/hardware_settings_request")
+        client.subscribe("deskflow/pair_request")
     else:
         logger.error(f"[MQTT Error] Lỗi kết nối Broker: rc={rc}")
 
@@ -484,6 +485,57 @@ def on_message(client, userdata, msg):
         station_control.on_hardware_settings_ack(data)
     elif topic == "deskflow/hardware_settings_request":
         station_control.on_hardware_settings_request(data)
+    elif topic == "deskflow/pair_request":
+        asyncio.run_coroutine_threadsafe(handle_esp32_pair_request(), bot.loop)
+
+
+async def handle_esp32_pair_request():
+    """Generates a Full Access 8-char pairing code + packed QR bitmap matrix for the ESP32 TFT."""
+    try:
+        svc = focus_mode.get_service()
+        if not svc:
+            return
+        raw_code, expires_at = await svc.auth.generate_pairing_code(scopes=["focus", "control", "spotify"])
+        qr_payload = f"deskflow://pair?code={raw_code}"
+        qr_size = 0
+        qr_bits_hex = ""
+        try:
+            import qrcode
+            qr = qrcode.QRCode(
+                version=None,
+                error_correction=qrcode.constants.ERROR_CORRECT_M,
+                box_size=1,
+                border=1,
+            )
+            qr.add_data(qr_payload)
+            qr.make(fit=True)
+            matrix = qr.get_matrix()
+            qr_size = len(matrix)
+            buf = bytearray((qr_size * qr_size + 7) // 8)
+            bit_idx = 0
+            for row in matrix:
+                for val in row:
+                    if val:
+                        buf[bit_idx >> 3] |= (1 << (7 - (bit_idx & 7)))
+                    bit_idx += 1
+            qr_bits_hex = buf.hex().upper()
+        except Exception as qe:
+            logger.warning(f"[ESP32 Pair] QR generation error: {qe}")
+
+        out = {
+            "action": "pair_code_result",
+            "code": raw_code,
+            "qr_payload": qr_payload,
+            "qr_size": qr_size,
+            "qr_bits": qr_bits_hex,
+            "expires_at": expires_at,
+            "expires_in": 600,
+            "full_access": True,
+        }
+        mqtt_publish_logged("deskflow/display", json.dumps(out), qos=1)
+        logger.info(f"[ESP32 Pair] Issued Full Access pairing code + {qr_size}x{qr_size} QR for station.")
+    except Exception as e:
+        logger.error(f"[ESP32 Pair] Failed: {e}")
 
 async def handle_battery_event(alert_type: str, pct: int):
     user = await bot.fetch_user(config.OWNER_USER_ID)
