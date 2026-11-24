@@ -61,7 +61,7 @@ class AppApiHandler:
         return web.json_response({
             "status": "healthy",
             "service": "deskflow-unified-backend",
-            "version": "2.2.0"
+            "version": "2.2.1"
         })
 
     # --- Control / Alarm ---
@@ -1491,6 +1491,31 @@ class AppApiHandler:
         )
 
     # --- #80 1-Click Backup & Restore JSON ---
+    async def handle_ota_check_update(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        try:
+            data = await self._parse_json(request)
+        except Exception:
+            data = {}
+        auto_pull = bool(data.get("auto_pull", True))
+        auto_flash = bool(data.get("auto_flash", True))
+        force = bool(data.get("force", False))
+        scheme = "https" if request.headers.get("X-Forwarded-Proto", "") == "https" or "thetechdude.io.vn" in request.host else request.scheme
+        base_url = f"{scheme}://{request.host}" if request.host else "https://df.api.thetechdude.io.vn"
+        try:
+            res = await station_control.check_and_pull_latest_ota(
+                auto_pull=auto_pull,
+                auto_flash=auto_flash,
+                force=force,
+                public_base_url=base_url,
+            )
+            return web.json_response({"success": True, "data": res, **res})
+        except FileNotFoundError as fe:
+            return error_response(str(fe), status=404)
+        except Exception as e:
+            logger.error(f"[AppAPI OTA Check] Failed: {e}")
+            return error_response(f"ota_check_failed: {e}", status=502)
+
     async def handle_backup_export(self, request: web.Request) -> web.Response:
         await self._authenticate(request, required_scope="control")
         backup = await asyncio.to_thread(station_control.export_backup)
@@ -1572,6 +1597,7 @@ def register_app_routes(app: web.Application, auth: FocusAuth) -> None:
     app.router.add_get("/api/app/control/notifications", handler.handle_notifications_get)
     app.router.add_post("/api/app/control/notify/test", handler.handle_notify_test)
     app.router.add_get("/api/app/control/ota/status", handler.handle_ota_status)
+    app.router.add_post("/api/app/control/ota/check-update", handler.handle_ota_check_update)
     app.router.add_post("/api/app/control/ota/upload", handler.handle_ota_upload)
     app.router.add_get("/api/app/control/ota/firmware.bin", handler.handle_ota_firmware_download)
     app.router.add_post("/api/app/control/ota/flash", handler.handle_ota_flash)

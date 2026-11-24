@@ -1605,18 +1605,36 @@ class StationControlManager:
             if eff == "rainbow" and rgb is None:
                 eff = "solid"
                 rgb_val = True
+                grad_val = False
             elif rgb is not None:
                 rgb_val = bool(rgb)
+                if rgb_val and gradient is None:
+                    grad_val = False
+                else:
+                    grad_val = (
+                        bool(gradient)
+                        if gradient is not None
+                        else bool(self.device_settings.get("led_gradient", False))
+                    )
             elif color:
                 rgb_val = False
+                grad_val = (
+                    bool(gradient)
+                    if gradient is not None
+                    else bool(self.device_settings.get("led_gradient", False))
+                )
             else:
                 rgb_val = bool(self.device_settings.get("led_rgb", False))
+                grad_val = (
+                    bool(gradient)
+                    if gradient is not None
+                    else bool(self.device_settings.get("led_gradient", False))
+                )
 
-            grad_val = (
-                bool(gradient)
-                if gradient is not None
-                else bool(self.device_settings.get("led_gradient", False))
-            )
+            if grad_val:
+                rgb_val = False
+            elif rgb_val:
+                grad_val = False
             hex2_val = (
                 self._normalize_hex_color(color2)
                 if color2
@@ -1724,6 +1742,91 @@ class StationControlManager:
 
     def record_ota_progress(self, status: str) -> None:
         self._ota_status["station_progress"] = status
+
+    @staticmethod
+    def _parse_semver(ver: Optional[str]) -> tuple:
+        parts = re.findall(r"\d+", str(ver or "0"))
+        nums = [int(p) for p in parts[:3]]
+        while len(nums) < 3:
+            nums.append(0)
+        return tuple(nums)
+
+    async def check_and_pull_latest_ota(
+        self,
+        auto_pull: bool = True,
+        auto_flash: bool = True,
+        force: bool = False,
+        public_base_url: str = "https://df.api.thetechdude.io.vn",
+    ) -> Dict[str, Any]:
+        """Checks GitHub Releases (HenryYT13/deskflow-app), pulls latest .bin, and flashes ESP32."""
+        repo = "HenryYT13/deskflow-app"
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "DeskFlow-OTA-Updater/2.2",
+        }
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            rel_resp = await client.get(f"https://api.github.com/repos/{repo}/releases/latest", headers=headers)
+            if rel_resp.status_code != 200:
+                raise RuntimeError(f"github_release_check_failed_http_{rel_resp.status_code}")
+            rel = rel_resp.json()
+
+        tag = str(rel.get("tag_name") or "").strip()
+        latest_ver = tag.lstrip("vV") or "0.0.0"
+        release_url = str(rel.get("html_url") or "")
+        assets = rel.get("assets") or []
+        bin_asset = next(
+            (a for a in assets if str(a.get("name", "")).endswith(".bin")),
+            None,
+        )
+        if not bin_asset or not bin_asset.get("browser_download_url"):
+            raise FileNotFoundError("no_bin_asset_in_latest_release")
+
+        snap = self.get_station_snapshot()
+        esp_ver = str(snap.get("fw_version") or self._ota_status.get("station_fw_version") or "0.0.0")
+        server_ver = str(self._ota_status.get("version") or "0.0.0")
+
+        update_available = self._parse_semver(latest_ver) > self._parse_semver(esp_ver)
+        server_needs_pull = (
+            force
+            or not self.get_ota_firmware_path()
+            or self._parse_semver(latest_ver) > self._parse_semver(server_ver)
+        )
+
+        pulled = False
+        if auto_pull and (server_needs_pull or update_available):
+            dl_url = str(bin_asset["browser_download_url"])
+            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                dl_resp = await client.get(dl_url, headers={"User-Agent": "DeskFlow-OTA-Updater/2.2"})
+                if dl_resp.status_code != 200 or len(dl_resp.content) < 50_000:
+                    raise RuntimeError(f"firmware_download_failed_http_{dl_resp.status_code}")
+            await asyncio.to_thread(
+                self.save_ota_firmware,
+                dl_resp.content,
+                latest_ver,
+                str(bin_asset.get("name") or "khkt.ino.bin"),
+            )
+            pulled = True
+
+        flashed = False
+        flash_res: Optional[Dict[str, Any]] = None
+        if auto_flash and (update_available or force) and self.get_ota_firmware_path():
+            flash_res = self.trigger_ota_flash(public_base_url=public_base_url)
+            flashed = bool(flash_res.get("success"))
+
+        return {
+            "success": True,
+            "current_esp_version": esp_ver,
+            "server_version": self._ota_status.get("version"),
+            "latest_version": latest_ver,
+            "tag_name": tag,
+            "release_url": release_url,
+            "asset_name": bin_asset.get("name"),
+            "size_bytes": self._ota_status.get("size_bytes", 0),
+            "update_available": update_available,
+            "pulled": pulled,
+            "flashed": flashed,
+            "flash": flash_res,
+        }
 
     # --- Phone & Cross-Device Notification Feed + ntfy Push ---
     def push_notification(self, kind: str, title: str, body: str, priority: str = "default") -> Dict[str, Any]:

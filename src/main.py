@@ -1266,16 +1266,27 @@ async def cmd_game(interaction: discord.Interaction, mode: app_commands.Choice[i
     await interaction.followup.send(f"🎮 Đã chuyển màn hình ESP32 sang **{res.get('name')}**!", ephemeral=True)
 
 
-@bot.tree.command(name="ota", description="Kiểm tra phiên bản OTA hoặc ra lệnh nạp firmware mới xuống ESP32")
-@app_commands.describe(action="Xem trạng thái hoặc nạp ngay")
+@bot.tree.command(name="ota", description="Kiểm tra phiên bản OTA, tự pull từ GitHub hoặc nạp firmware xuống ESP32")
+@app_commands.describe(action="Xem trạng thái, tự động Check & Pull GitHub, hoặc Nạp ngay")
 @app_commands.choices(action=[
     app_commands.Choice(name="Xem trạng thái OTA", value="status"),
-    app_commands.Choice(name="Nạp Firmware OTA ngay", value="flash"),
+    app_commands.Choice(name="Check & Tự Pull bản mới nhất + Flash", value="pull"),
+    app_commands.Choice(name="Nạp Firmware OTA có sẵn ngay", value="flash"),
 ])
 async def cmd_ota(interaction: discord.Interaction, action: Optional[app_commands.Choice[str]] = None):
     await interaction.response.defer(ephemeral=True)
     act = action.value if action else "status"
     st = station_control.get_ota_status()
+    if act == "pull":
+        try:
+            res = await station_control.check_and_pull_latest_ota(auto_pull=True, auto_flash=True, force=True)
+            await interaction.followup.send(
+                f"✅ **OTA GitHub Sync**\n• Bản mới nhất: `{res.get('tag_name')}`\n• ESP32 trước đó: `{res.get('current_esp_version')}`\n• Đã pull: `{res.get('pulled')}` | Đã gửi lệnh Flash: `{res.get('flashed')}`",
+                ephemeral=True,
+            )
+        except Exception as e:
+            await interaction.followup.send(f"❌ Check/Pull OTA thất bại: {e}", ephemeral=True)
+        return
     if act == "flash":
         try:
             res = station_control.trigger_ota_flash()
