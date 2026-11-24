@@ -1751,6 +1751,33 @@ class StationControlManager:
             nums.append(0)
         return tuple(nums)
 
+    @staticmethod
+    def _get_github_token() -> str:
+        tok = (
+            os.getenv("GITHUB_TOKEN")
+            or os.getenv("GH_TOKEN")
+            or getattr(config, "GITHUB_TOKEN", None)
+            or ""
+        ).strip()
+        if tok:
+            return tok
+        try:
+            hosts_path = os.path.expanduser("~/.config/gh/hosts.yml")
+            if os.path.exists(hosts_path):
+                with open(hosts_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        s = line.strip()
+                        if s.startswith("oauth_token:"):
+                            return s.split(":", 1)[1].strip().strip('"').strip("'")
+        except Exception:
+            pass
+        try:
+            import subprocess
+            out = subprocess.check_output(["gh", "auth", "token"], timeout=3.0, stderr=subprocess.DEVNULL)
+            return out.decode("utf-8", errors="ignore").strip()
+        except Exception:
+            return ""
+
     async def check_and_pull_latest_ota(
         self,
         auto_pull: bool = True,
@@ -1758,12 +1785,16 @@ class StationControlManager:
         force: bool = False,
         public_base_url: str = "https://df.api.thetechdude.io.vn",
     ) -> Dict[str, Any]:
-        """Checks GitHub Releases (HenryYT13/deskflow-app), pulls latest .bin, and flashes ESP32."""
+        """Checks GitHub Releases (HenryYT13/deskflow-app), pulls latest khkt.ino.bin, and flashes ESP32."""
         repo = "HenryYT13/deskflow-app"
-        headers = {
+        headers: Dict[str, str] = {
             "Accept": "application/vnd.github+json",
             "User-Agent": "DeskFlow-OTA-Updater/2.2",
         }
+        gh_tok = self._get_github_token()
+        if gh_tok:
+            headers["Authorization"] = f"Bearer {gh_tok}"
+
         async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
             rel_resp = await client.get(f"https://api.github.com/repos/{repo}/releases/latest", headers=headers)
             if rel_resp.status_code != 200:
@@ -1774,12 +1805,17 @@ class StationControlManager:
         latest_ver = tag.lstrip("vV") or "0.0.0"
         release_url = str(rel.get("html_url") or "")
         assets = rel.get("assets") or []
+
+        def _is_app_bin(a: Dict[str, Any]) -> bool:
+            n = str(a.get("name", "")).lower()
+            return n.endswith(".bin") and not any(x in n for x in ("bootloader", "partitions", "merged"))
+
         bin_asset = next(
-            (a for a in assets if str(a.get("name", "")).endswith(".bin")),
+            (a for a in assets if str(a.get("name", "")) in ("khkt.ino.bin", "firmware_latest.bin")),
             None,
-        )
-        if not bin_asset or not bin_asset.get("browser_download_url"):
-            raise FileNotFoundError("no_bin_asset_in_latest_release")
+        ) or next((a for a in assets if _is_app_bin(a)), None)
+        if not bin_asset or not (bin_asset.get("url") or bin_asset.get("browser_download_url")):
+            raise FileNotFoundError("no_app_bin_asset_in_latest_release")
 
         snap = self.get_station_snapshot()
         esp_ver = str(snap.get("fw_version") or self._ota_status.get("station_fw_version") or "0.0.0")
@@ -1794,11 +1830,25 @@ class StationControlManager:
 
         pulled = False
         if auto_pull and (server_needs_pull or update_available):
-            dl_url = str(bin_asset["browser_download_url"])
-            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-                dl_resp = await client.get(dl_url, headers={"User-Agent": "DeskFlow-OTA-Updater/2.2"})
-                if dl_resp.status_code != 200 or len(dl_resp.content) < 50_000:
+            asset_api_url = str(bin_asset.get("url") or bin_asset.get("browser_download_url"))
+            dl_headers: Dict[str, str] = {
+                "Accept": "application/octet-stream",
+                "User-Agent": "DeskFlow-OTA-Updater/2.2",
+            }
+            if gh_tok:
+                dl_headers["Authorization"] = f"Bearer {gh_tok}"
+
+            async with httpx.AsyncClient(timeout=60.0, follow_redirects=False) as client:
+                dl_resp = await client.get(asset_api_url, headers=dl_headers)
+                if dl_resp.status_code in (301, 302, 303, 307, 308) and dl_resp.headers.get("location"):
+                    dl_resp = await client.get(
+                        dl_resp.headers["location"],
+                        headers={"User-Agent": "DeskFlow-OTA-Updater/2.2"},
+                        follow_redirects=True,
+                    )
+                if dl_resp.status_code != 200 or len(dl_resp.content) < 100_000:
                     raise RuntimeError(f"firmware_download_failed_http_{dl_resp.status_code}")
+
             await asyncio.to_thread(
                 self.save_ota_firmware,
                 dl_resp.content,
