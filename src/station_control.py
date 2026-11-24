@@ -248,6 +248,7 @@ class StationControlManager:
             "clock_style": "digital_classic",
             "led_effect": "solid",
             "led_speed": 50,
+            "led_rgb": False,
             "ambient_sync_enabled": False,
             "anti_oversleep_enabled": True,
             "anti_oversleep_delay_sec": 300,
@@ -584,11 +585,13 @@ class StationControlManager:
                     self.device_settings["clock_style"] = style
                     self.mqtt_publish("deskflow/display", json.dumps({"action": "clock_style", "style": style}))
 
-            # LED strip effects, Ambient sync, Anti-oversleep, Phone ntfy, AI TKB sync
+            # LED strip effects, RGB mode, Ambient sync, Anti-oversleep, Phone ntfy, AI TKB sync
             if "led_effect" in updates and isinstance(updates["led_effect"], str):
                 self.device_settings["led_effect"] = updates["led_effect"].strip().lower()
             if "led_speed" in updates:
                 self.device_settings["led_speed"] = max(5, min(100, int(updates["led_speed"])))
+            if "led_rgb" in updates:
+                self.device_settings["led_rgb"] = bool(updates["led_rgb"])
             if "ambient_sync_enabled" in updates:
                 self.device_settings["ambient_sync_enabled"] = bool(updates["ambient_sync_enabled"])
             if "anti_oversleep_enabled" in updates:
@@ -1541,24 +1544,41 @@ class StationControlManager:
     # --- Shopee LED Strip Effects & Ambient Cover Sync ---
     SUPPORTED_LED_EFFECTS = ("solid", "rainbow", "breathing", "chase", "police", "sparkle", "fire", "strobe", "ambient")
 
-    def set_lamp_effect(self, effect: str, speed: Optional[int] = None, color: Optional[str] = None) -> Dict[str, Any]:
+    def set_lamp_effect(
+        self,
+        effect: str,
+        speed: Optional[int] = None,
+        color: Optional[str] = None,
+        rgb: Optional[bool] = None,
+    ) -> Dict[str, Any]:
         eff = str(effect or "solid").strip().lower()
         if eff not in self.SUPPORTED_LED_EFFECTS:
             raise ValueError(f"Invalid led_effect '{eff}'. Supported: {self.SUPPORTED_LED_EFFECTS}")
         with self._config_lock:
             spd = self.device_settings.get("led_speed", 50) if speed is None else max(5, min(100, int(speed)))
+            if eff == "rainbow" and rgb is None:
+                eff = "solid"
+                rgb_val = True
+            elif rgb is not None:
+                rgb_val = bool(rgb)
+            elif color:
+                rgb_val = False
+            else:
+                rgb_val = bool(self.device_settings.get("led_rgb", False))
+
             self.device_settings["led_effect"] = eff
             self.device_settings["led_speed"] = spd
+            self.device_settings["led_rgb"] = rgb_val
             if eff != "ambient":
                 self.device_settings["ambient_sync_enabled"] = False
             self._save_settings()
         if color:
             self.set_lamp_color(color)
-        payload = {"action": "led_effect", "effect": eff, "speed": spd}
+        payload = {"action": "led_effect", "effect": eff, "speed": spd, "rgb": rgb_val}
         msg = json.dumps(payload)
         self.mqtt_publish("deskflow/display", msg)
         self.mqtt_publish("deskflow/hardware", msg)
-        return {"success": True, "led_effect": eff, "led_speed": spd}
+        return {"success": True, "led_effect": eff, "led_speed": spd, "led_rgb": rgb_val}
 
     def set_ambient_sync(self, enabled: bool) -> Dict[str, Any]:
         with self._config_lock:

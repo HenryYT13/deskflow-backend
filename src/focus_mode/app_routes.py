@@ -302,8 +302,9 @@ class AppApiHandler:
         eff = str(data.get("effect") or "solid").strip().lower()
         speed = data.get("speed")
         color = data.get("color")
+        rgb = data.get("rgb")
         try:
-            res = station_control.set_lamp_effect(eff, speed=speed, color=color)
+            res = station_control.set_lamp_effect(eff, speed=speed, color=color, rgb=rgb)
             return web.json_response(res)
         except ValueError as ve:
             return error_response(str(ve), status=400)
