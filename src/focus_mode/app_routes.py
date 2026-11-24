@@ -61,7 +61,7 @@ class AppApiHandler:
         return web.json_response({
             "status": "healthy",
             "service": "deskflow-unified-backend",
-            "version": "1.0.0"
+            "version": "2.1.0"
         })
 
     # --- Control / Alarm ---
@@ -295,6 +295,96 @@ class AppApiHandler:
             return error_response("invalid_led_action", status=400)
         res = station_control.set_led(act)
         return web.json_response(res)
+
+    async def handle_lamp_effect(self, request: web.Request) -> web.Response:
+        await self._authenticate(request)
+        data = await self._parse_json(request)
+        eff = str(data.get("effect") or "solid").strip().lower()
+        speed = data.get("speed")
+        color = data.get("color")
+        try:
+            res = station_control.set_lamp_effect(eff, speed=speed, color=color)
+            return web.json_response(res)
+        except ValueError as ve:
+            return error_response(str(ve), status=400)
+
+    async def handle_lamp_ambient(self, request: web.Request) -> web.Response:
+        await self._authenticate(request)
+        data = await self._parse_json(request)
+        enabled = bool(data.get("enabled", True))
+        res = station_control.set_ambient_sync(enabled)
+        return web.json_response(res)
+
+    async def handle_alarm_confirm_awake(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        res = await alarm_engine.confirm_awake()
+        return web.json_response(res)
+
+    async def handle_notifications_get(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        try:
+            since = float(request.query.get("since", "0") or 0)
+        except ValueError:
+            since = 0.0
+        items = station_control.get_notifications(since=since)
+        return web.json_response({"success": True, "notifications": items})
+
+    async def handle_notify_test(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        data = await self._parse_json(request)
+        title = str(data.get("title") or "DeskFlow Test Alert")
+        body = str(data.get("body") or "Thông báo đẩy về điện thoại hoạt động bình thường!")
+        ev = station_control.push_notification("test", title, body, "high")
+        return web.json_response({"success": True, "notification": ev})
+
+    async def handle_ota_status(self, request: web.Request) -> web.Response:
+        try:
+            await self._authenticate(request, required_scope="control")
+        except Exception:
+            pass
+        return web.json_response({"success": True, "data": station_control.get_ota_status()})
+
+    async def handle_ota_upload(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        version = request.query.get("version") or "2.1.0"
+        auto_flash = request.query.get("flash", "false").lower() in ("1", "true", "yes")
+        filename = "firmware.bin"
+        if request.content_type.startswith("multipart/"):
+            reader = await request.multipart()
+            content = b""
+            async for field in reader:
+                if field.name in ("file", "firmware"):
+                    filename = field.filename or filename
+                    content = await field.read()
+                elif field.name == "version":
+                    version = (await field.text()).strip() or version
+                elif field.name == "flash":
+                    auto_flash = (await field.text()).strip().lower() in ("1", "true", "yes")
+        else:
+            content = await request.read()
+            filename = request.headers.get("X-Filename", filename)
+        try:
+            meta = station_control.save_ota_firmware(content, version=version, filename=filename)
+            flash_res = None
+            if auto_flash:
+                flash_res = station_control.trigger_ota_flash()
+            return web.json_response({"success": True, "ota": meta, "flash": flash_res})
+        except ValueError as ve:
+            return error_response(str(ve), status=400)
+
+    async def handle_ota_firmware_download(self, request: web.Request) -> web.Response:
+        bin_path = station_control.get_ota_firmware_path()
+        if not bin_path:
+            return web.Response(status=404, text="No OTA firmware uploaded")
+        return web.FileResponse(bin_path, headers={"Content-Disposition": "attachment; filename=deskflow-esp32.bin"})
+
+    async def handle_ota_flash(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        try:
+            res = station_control.trigger_ota_flash()
+            return web.json_response(res)
+        except FileNotFoundError as fnf:
+            return error_response(str(fnf), status=404)
 
     async def handle_clock_style_get(self, request: web.Request) -> web.Response:
         try:
@@ -1058,6 +1148,25 @@ class AppApiHandler:
         calendar_service.push_to_station()
         return web.json_response({"success": True, "data": status, **status})
 
+    async def handle_calendar_ai_sync_tkb(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        try:
+            data = await self._parse_json(request)
+        except Exception:
+            data = {}
+        week_offset = int(data.get("week_offset", 0) or 0)
+        use_ai = bool(data.get("use_ai", True))
+        try:
+            res = await calendar_service.ai_sync_tkb_to_calendar(week_offset=week_offset, use_ai=use_ai)
+            return web.json_response(res)
+        except PermissionError as pe:
+            return error_response(str(pe), status=403)
+        except ValueError as ve:
+            return error_response(str(ve), status=400)
+        except Exception as e:
+            logger.error(f"[AppAPI] AI TKB sync error: {e}", exc_info=True)
+            return error_response(f"ai_sync_failed: {e}", status=500)
+
 
 def register_app_routes(app: web.Application, auth: FocusAuth) -> None:
     handler = AppApiHandler(auth=auth)
@@ -1073,6 +1182,7 @@ def register_app_routes(app: web.Application, auth: FocusAuth) -> None:
     app.router.add_post("/api/app/control/alarm/solve", handler.handle_alarm_solve)
     app.router.add_post("/api/app/control/alarm/cancel", handler.handle_alarm_cancel)
     app.router.add_post("/api/app/control/alarm/emergency-stop", handler.handle_alarm_emergency_stop)
+    app.router.add_post("/api/app/control/alarm/confirm-awake", handler.handle_alarm_confirm_awake)
     app.router.add_post("/api/app/control/alarm/buzz", handler.handle_alarm_buzz)
     app.router.add_post("/api/app/control/alarm/schedule", handler.handle_alarm_schedule)
     app.router.add_post("/api/app/control/morse/play", handler.handle_morse_play)
@@ -1111,7 +1221,15 @@ def register_app_routes(app: web.Application, auth: FocusAuth) -> None:
     app.router.add_post("/api/app/control/lamp/color", handler.handle_lamp_color)
     app.router.add_post("/api/app/control/lamp/dim", handler.handle_lamp_dim)
     app.router.add_post("/api/app/control/lamp/off", handler.handle_lamp_off)
+    app.router.add_post("/api/app/control/lamp/effect", handler.handle_lamp_effect)
+    app.router.add_post("/api/app/control/lamp/ambient", handler.handle_lamp_ambient)
     app.router.add_post("/api/app/control/led", handler.handle_led)
+    app.router.add_get("/api/app/control/notifications", handler.handle_notifications_get)
+    app.router.add_post("/api/app/control/notify/test", handler.handle_notify_test)
+    app.router.add_get("/api/app/control/ota/status", handler.handle_ota_status)
+    app.router.add_post("/api/app/control/ota/upload", handler.handle_ota_upload)
+    app.router.add_get("/api/app/control/ota/firmware.bin", handler.handle_ota_firmware_download)
+    app.router.add_post("/api/app/control/ota/flash", handler.handle_ota_flash)
     app.router.add_get("/api/app/control/clock-style", handler.handle_clock_style_get)
     app.router.add_post("/api/app/control/clock-style", handler.handle_clock_style)
 
@@ -1152,6 +1270,7 @@ def register_app_routes(app: web.Application, auth: FocusAuth) -> None:
     app.router.add_post("/api/app/calendar/oauth/start", handler.handle_calendar_oauth_start)
     app.router.add_get("/api/app/calendar/oauth/callback", handler.handle_calendar_oauth_callback)
     app.router.add_post("/api/app/calendar/oauth/disconnect", handler.handle_calendar_oauth_disconnect)
+    app.router.add_post("/api/app/calendar/ai-sync-tkb", handler.handle_calendar_ai_sync_tkb)
 
     # Also register CORS options preflight for /api/app/*
     async def options_app_handler(request: web.Request) -> web.Response:

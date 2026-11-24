@@ -1063,6 +1063,147 @@ class CalendarService:
 
         return payload
 
+    async def ai_sync_tkb_to_calendar(
+        self,
+        week_offset: int = 0,
+        use_ai: bool = True,
+    ) -> Dict[str, Any]:
+        """Reads current PocketBase timetable and creates deduplicated Google Calendar events for target week."""
+        if not self.is_oauth_connected():
+            raise PermissionError("oauth_not_connected")
+
+        import timetable
+        import config
+        import station_control as sc_mod
+
+        raw_tkb = await timetable.fetch_current_weekly_schedule()
+        sched_data = raw_tkb.get("schedule_data") or {}
+        if not sched_data:
+            raise ValueError("timetable_empty")
+
+        now_vn = datetime.now(VN_TZ).date()
+        this_monday = now_vn - timedelta(days=now_vn.weekday())
+        target_monday = this_monday + timedelta(days=7 * int(week_offset))
+
+        days_vn = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7"]
+        parsed_days: List[Dict[str, Any]] = []
+        for idx, day_name in enumerate(days_vn):
+            d_date = target_monday + timedelta(days=idx)
+            info = timetable.parse_day_data(sched_data, day_name)
+            if not info.get("has_any_class"):
+                continue
+            parsed_days.append({
+                "date": d_date.isoformat(),
+                "day": day_name,
+                "morning": info.get("morning") or [],
+                "afternoon": info.get("afternoon") or [],
+                "has_afternoon": bool(info.get("has_afternoon")),
+                "uniform": info.get("dp_sang") or "Tự do",
+            })
+
+        ai_summaries: Dict[str, Dict[str, str]] = {}
+        groq_key = getattr(config, "GROQ_API_KEY", "") or os.getenv("GROQ_API_KEY", "")
+        if use_ai and groq_key and parsed_days:
+            try:
+                from groq import Groq
+                prompt = (
+                    "Bạn là trợ lý học tập. Dựa vào TKB JSON bên dưới, hãy viết tóm tắt ngắn gọn cho từng ngày (<=60 ký tự) "
+                    "và 1 câu nhắc chuẩn bị bài/đồng phục (<=100 ký tự). Trả về đúng JSON map theo key `date`: "
+                    '{"YYYY-MM-DD": {"morning_title": "...", "afternoon_title": "...", "tip": "..."}}. '
+                    f"TKB: {json.dumps(parsed_days, ensure_ascii=False)}"
+                )
+                def _ask():
+                    client = Groq(api_key=groq_key)
+                    resp = client.chat.completions.create(
+                        model="llama-3.1-8b-instant",
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.3,
+                        max_tokens=700,
+                        response_format={"type": "json_object"},
+                    )
+                    return resp.choices[0].message.content
+                raw_json = await asyncio.to_thread(_ask)
+                loaded = json.loads(raw_json or "{}")
+                if isinstance(loaded, dict):
+                    ai_summaries = loaded
+            except Exception as e:
+                logger.warning(f"[Calendar AI TKB] Groq formatting fallback: {e}")
+
+        # Refresh existing events to deduplicate cleanly
+        await self.sync_events(push_to_station=False)
+        existing_tags = set()
+        for ev in self.cached_events:
+            desc = str(ev.get("description") or "")
+            for m in re.findall(r"\[DF-TKB:[^\]]+\]", desc):
+                existing_tags.add(m)
+
+        created = 0
+        skipped = 0
+        week_num = raw_tkb.get("week_number", "?")
+        for item in parsed_days:
+            d_iso = item["date"]
+            ai_d = ai_summaries.get(d_iso) if isinstance(ai_summaries.get(d_iso), dict) else {}
+            tip = str(ai_d.get("tip") or "").strip()
+
+            if item["morning"]:
+                tag = f"[DF-TKB:{d_iso}:M]"
+                if tag in existing_tags:
+                    skipped += 1
+                else:
+                    default_title = f"Học sáng: {', '.join(item['morning'])}"
+                    title = str(ai_d.get("morning_title") or default_title)[:95]
+                    desc = f"{tag}\nTuần {week_num} • Đồng phục: {item['uniform']}\nMôn: {', '.join(item['morning'])}"
+                    if tip:
+                        desc += f"\nGợi ý AI: {tip}"
+                    await self.create_event(
+                        title=title,
+                        date_str=d_iso,
+                        start_time="07:15",
+                        end_time="11:30",
+                        all_day=False,
+                        location="Trường học",
+                        description=desc,
+                    )
+                    created += 1
+
+            if item["has_afternoon"] and item["afternoon"]:
+                tag = f"[DF-TKB:{d_iso}:A]"
+                if tag in existing_tags:
+                    skipped += 1
+                else:
+                    default_title = f"Học chiều: {', '.join(item['afternoon'])}"
+                    title = str(ai_d.get("afternoon_title") or default_title)[:95]
+                    desc = f"{tag}\nTuần {week_num} • Môn chiều: {', '.join(item['afternoon'])}"
+                    await self.create_event(
+                        title=title,
+                        date_str=d_iso,
+                        start_time="14:00",
+                        end_time="16:45",
+                        all_day=False,
+                        location="Trường học",
+                        description=desc,
+                    )
+                    created += 1
+
+        await self.sync_events(push_to_station=True)
+        try:
+            sc_mod.station_control.push_notification(
+                "tkb_sync",
+                "AI Auto-Sync TKB → Calendar",
+                f"Đã tạo {created} buổi học mới (bỏ qua {skipped} trùng) cho tuần {target_monday.isoformat()}.",
+                "default",
+            )
+        except Exception:
+            pass
+        return {
+            "success": True,
+            "week_monday": target_monday.isoformat(),
+            "week_number": week_num,
+            "created": created,
+            "skipped": skipped,
+            "ai_enhanced": bool(ai_summaries),
+        }
+
     def push_to_station(self) -> bool:
         try:
             import station_control

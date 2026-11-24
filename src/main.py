@@ -450,6 +450,10 @@ def on_message(client, userdata, msg):
             station_control.on_hardware_settings_request(data)
         elif action == "station_language_update":
             station_control.on_station_language_update(data)
+        elif action == "confirm_awake":
+            asyncio.run_coroutine_threadsafe(alarm_engine.confirm_awake(), bot.loop)
+        elif action == "ota_progress":
+            station_control.record_ota_progress(str(data.get("status") or "updating"))
     elif topic == config.TOPIC_MATH_TRIGGER:
         device_status["math_active"] = True
         device_status["current_math_answer"] = str(data.get("answer"))

@@ -203,13 +203,18 @@ async def cors_middleware(request: web.Request, handler):
         if allow_origin:
             resp.headers["Access-Control-Allow-Origin"] = allow_origin
             resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
-            resp.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, Accept"
+            resp.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, Accept, X-Filename"
             resp.headers["Access-Control-Max-Age"] = "86400"
             resp.headers["Vary"] = "Origin"
         return resp
 
     try:
-        max_bytes = 2 * 1024 * 1024 if request.path.startswith("/api/app/control/melody/") else 16384
+        if request.path.startswith("/api/app/control/ota/"):
+            max_bytes = 4 * 1024 * 1024
+        elif request.path.startswith("/api/app/control/melody/"):
+            max_bytes = 2 * 1024 * 1024
+        else:
+            max_bytes = 16384
         if request.content_length is not None and request.content_length > max_bytes:
             raise web.HTTPRequestEntityTooLarge(max_size=max_bytes, actual_size=request.content_length)
         if max_bytes == 16384 and request.can_read_body:
@@ -664,8 +669,8 @@ class FocusApiHandler:
 
 
 def create_app(service: FocusService) -> web.Application:
-    # 2 MB framework limit; non-melody endpoints enforce 16 KB inside cors_middleware
-    app = web.Application(client_max_size=2 * 1024 * 1024, middlewares=[host_validation_middleware, cors_middleware])
+    # 4 MB framework limit; /melody/* allows 2 MB, all other endpoints enforce 16 KB
+    app = web.Application(client_max_size=4 * 1024 * 1024, middlewares=[host_validation_middleware, cors_middleware])
     handler = FocusApiHandler(service)
 
     async def options_handler(request: web.Request) -> web.Response:

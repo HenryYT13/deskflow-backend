@@ -263,6 +263,10 @@ async def get_weather_forecast(city: Optional[str] = None) -> Dict[str, Any]:
     }
     return res
 
+_last_ambient_hex: str | None = None
+_notified_event_ids: set[str] = set()
+
+
 async def calendar_sync_job():
     """Đồng bộ Google Calendar (OAuth + iCal) mỗi 5 phút và đẩy lên ESP32."""
     try:
@@ -271,6 +275,79 @@ async def calendar_sync_job():
             logger.debug(f"[Calendar Sync] {status.get('upcoming_count', 0)} events synced.")
     except Exception as e:
         logger.warning(f"[Calendar Sync Error] {e}")
+
+
+async def ambient_cover_sync_job():
+    """Đồng bộ màu bìa album Spotify sang đèn WS2812B ESP32 khi ambient_sync_enabled=True."""
+    global _last_ambient_hex
+    try:
+        import station_control
+        import spotify_service
+        sc = station_control.station_control
+        if not sc.device_settings.get("ambient_sync_enabled", False):
+            _last_ambient_hex = None
+            return
+        sp = await asyncio.to_thread(spotify_service.get_current_playing, False)
+        if not sp or not sp.get("is_playing"):
+            return
+        hex_col = sp.get("ambient_color")
+        if hex_col and hex_col != _last_ambient_hex:
+            _last_ambient_hex = hex_col
+            sc.set_lamp_color(hex_col)
+            logger.info(f"[Ambient] Spotify cover -> LED {hex_col} ({sp.get('track')})")
+    except Exception as e:
+        logger.debug(f"[Ambient Sync] Skip: {e}")
+
+
+async def wakeup_check_job():
+    """Kiểm tra trạng thái báo thức chống ngủ lại (Wake-up verification)."""
+    try:
+        from alarm_engine import alarm_engine
+        await alarm_engine.check_wakeup_tick()
+    except Exception as e:
+        logger.debug(f"[Wakeup Tick] {e}")
+
+
+async def calendar_upcoming_reminder_job():
+    """Bắn thông báo về ĐT/Web trước giờ sự kiện Google Calendar 15 phút."""
+    try:
+        import station_control
+        now_vn = datetime.now(VN_TZ)
+        status = calendar_service.get_public_status()
+        for ev in status.get("events", []):
+            if not ev.get("is_today") or ev.get("all_day"):
+                continue
+            eid = str(ev.get("id") or "")
+            if not eid or eid in _notified_event_ids:
+                continue
+            try:
+                start_dt = datetime.fromisoformat(ev["start_iso"]).astimezone(VN_TZ)
+                delta_min = (start_dt - now_vn).total_seconds() / 60.0
+                if 0.0 < delta_min <= 15.5:
+                    _notified_event_ids.add(eid)
+                    if len(_notified_event_ids) > 200:
+                        _notified_event_ids.clear()
+                    station_control.station_control.push_notification(
+                        "calendar_reminder",
+                        f"Sắp tới lịch ({int(round(delta_min))}p nữa)",
+                        f"{ev.get('title')} ({ev.get('start_time')})",
+                        "high",
+                    )
+            except Exception:
+                continue
+    except Exception as e:
+        logger.debug(f"[Calendar Reminder] {e}")
+
+
+async def ai_tkb_weekly_cron_job():
+    """Tự động chạy AI Sync TKB -> Google Calendar mỗi sáng Thứ 2 lúc 06:00."""
+    try:
+        import station_control
+        if not station_control.station_control.device_settings.get("tkb_auto_sync_gcal", False):
+            return
+        await calendar_service.ai_sync_tkb_to_calendar(week_offset=0, use_ai=True)
+    except Exception as e:
+        logger.warning(f"[AI TKB Weekly Cron] {e}")
 
 
 def setup_scheduler(bot, mqtt_client):
@@ -304,6 +381,17 @@ def setup_scheduler(bot, mqtt_client):
         CronTrigger(hour=init_h, minute=init_m, timezone="Asia/Ho_Chi_Minh"),
         id="check_rain_job",
         replace_existing=True
+    )
+
+    # 5. Ambient Cover Art Sync (4s) + Anti-oversleep Wakeup Tick (5s) + Calendar 15m Reminder (1m) + AI TKB Weekly (Mon 06:00)
+    scheduler.add_job(ambient_cover_sync_job, "interval", seconds=4, id="ambient_cover_sync_job")
+    scheduler.add_job(wakeup_check_job, "interval", seconds=5, id="wakeup_check_job")
+    scheduler.add_job(calendar_upcoming_reminder_job, "interval", minutes=1, id="calendar_reminder_job")
+    scheduler.add_job(
+        ai_tkb_weekly_cron_job,
+        CronTrigger(day_of_week="mon", hour=6, minute=0, timezone="Asia/Ho_Chi_Minh"),
+        id="ai_tkb_weekly_cron_job",
+        replace_existing=True,
     )
     
     scheduler.start()

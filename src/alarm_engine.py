@@ -64,6 +64,31 @@ class AlarmEngine:
         self._lock = asyncio.Lock()
         self._alarm_epoch: int = 0
         self._active_session: Optional[AlarmSession] = None
+        # Anti-oversleep (Wake-up verification) state
+        self.anti_oversleep_enabled: bool = True
+        self.anti_oversleep_delay_sec: int = 300
+        self._wakeup_state: str = "idle"  # idle | waiting | prompt
+        self._wakeup_check_at: float = 0.0
+        self._wakeup_deadline: float = 0.0
+        self._wakeup_question: str = ""
+        self._wakeup_solution: int = 0
+        self._notify_hook = None
+
+    def set_notify_hook(self, hook) -> None:
+        self._notify_hook = hook
+
+    def set_anti_oversleep(self, enabled: Optional[bool] = None, delay_sec: Optional[int] = None) -> None:
+        if enabled is not None:
+            self.anti_oversleep_enabled = bool(enabled)
+        if delay_sec is not None:
+            self.anti_oversleep_delay_sec = max(30, min(1800, int(delay_sec)))
+
+    def _emit_notify(self, kind: str, title: str, body: str, priority: str = "high") -> None:
+        if self._notify_hook:
+            try:
+                self._notify_hook(kind, title, body, priority)
+            except Exception as e:
+                logger.warning(f"[AlarmEngine] Notify hook failed: {e}")
 
     def set_mqtt_client(self, client: mqtt.Client) -> None:
         self.mqtt_client = client
@@ -93,8 +118,18 @@ class AlarmEngine:
 
     async def get_active_session_public(self) -> Dict[str, Any]:
         async with self._lock:
+            base = {
+                "anti_oversleep_enabled": self.anti_oversleep_enabled,
+                "anti_oversleep_delay_sec": self.anti_oversleep_delay_sec,
+                "wakeup_state": self._wakeup_state,
+                "wakeup_pending": self._wakeup_state == "prompt",
+                "wakeup_waiting": self._wakeup_state == "waiting",
+                "wakeup_check_at": self._wakeup_check_at if self._wakeup_state != "idle" else None,
+                "wakeup_deadline": self._wakeup_deadline if self._wakeup_state == "prompt" else None,
+            }
             if not self._active_session:
                 return {
+                    **base,
                     "active": False,
                     "session_id": None,
                     "epoch": self._alarm_epoch,
@@ -104,7 +139,9 @@ class AlarmEngine:
                     "cooldown_until": 0.0,
                     "is_locked": False,
                 }
-            return self._active_session.to_public_dict()
+            res = self._active_session.to_public_dict()
+            res.update(base)
+            return res
 
     async def trigger_alarm(self, question: str, solution: int, session_id: Optional[str] = None) -> Dict[str, Any]:
         """Triggers or replaces an active math alarm."""
@@ -135,6 +172,13 @@ class AlarmEngine:
 
             self._alarm_epoch = target_epoch
             self._active_session = new_session
+            self._wakeup_state = "idle"
+            self._emit_notify(
+                "alarm_ringing",
+                "DeskFlow Báo thức đang reo!",
+                f"Giải toán để tắt còi: {question}",
+                "urgent",
+            )
             logger.info(f"[AlarmEngine] Math Alarm triggered (session={sid}, epoch={target_epoch}, q='{question}')")
             return {"success": True, "session_id": sid, "epoch": target_epoch}
 
@@ -173,10 +217,80 @@ class AlarmEngine:
                 logger.error("[AlarmEngine] Rollback solve state due to MQTT publish failure.")
                 raise
 
+            solved_q = sess.question
+            solved_ans = sess.solution
             self._alarm_epoch = target_epoch
             self._active_session = None
+            if self.anti_oversleep_enabled:
+                self._wakeup_state = "waiting"
+                self._wakeup_check_at = time.time() + self.anti_oversleep_delay_sec
+                self._wakeup_question = solved_q
+                self._wakeup_solution = solved_ans
             logger.info(f"[AlarmEngine] Math Alarm solved successfully (session={session_id}, epoch={target_epoch})")
-            return {"success": True, "epoch": target_epoch, "message": "Alarm solved and silenced."}
+            return {
+                "success": True,
+                "epoch": target_epoch,
+                "wakeup_scheduled": self.anti_oversleep_enabled,
+                "wakeup_check_in_sec": self.anti_oversleep_delay_sec if self.anti_oversleep_enabled else 0,
+                "message": "Alarm solved and silenced.",
+            }
+
+    async def confirm_awake(self) -> Dict[str, Any]:
+        """Confirms the user is actually awake, cancelling pending anti-oversleep re-trigger."""
+        async with self._lock:
+            was_state = self._wakeup_state
+            self._wakeup_state = "idle"
+            self._wakeup_check_at = 0.0
+            self._wakeup_deadline = 0.0
+            try:
+                self._publish_alarm_mqtt({"action": "wakeup_confirmed"})
+            except AlarmPublishError:
+                pass
+            logger.info(f"[AlarmEngine] Wake-up confirmed by user (previous state={was_state}).")
+            return {"success": True, "previous_state": was_state}
+
+    async def check_wakeup_tick(self) -> None:
+        """Periodic check (~5s) driving anti-oversleep prompt & automatic alarm re-trigger."""
+        now = time.time()
+        should_retrigger = False
+        retrigger_q = ""
+        retrigger_sol = 0
+
+        async with self._lock:
+            if self._active_session is not None or self._wakeup_state == "idle":
+                return
+            if self._wakeup_state == "waiting" and now >= self._wakeup_check_at:
+                self._wakeup_state = "prompt"
+                self._wakeup_deadline = now + 45.0
+                try:
+                    self._publish_alarm_mqtt({
+                        "action": "math_alarm_wakeup_check",
+                        "timeout_sec": 45,
+                    })
+                except AlarmPublishError:
+                    pass
+                self._emit_notify(
+                    "wakeup_check",
+                    "Bạn còn thức chứ?",
+                    "Bấm xác nhận trên ESP32, Web hoặc ĐT trong 45s nếu không báo thức sẽ reo lại!",
+                    "urgent",
+                )
+                logger.info("[AlarmEngine] Anti-oversleep prompt sent (45s window).")
+            elif self._wakeup_state == "prompt" and now >= self._wakeup_deadline:
+                import random
+                a = random.randint(12, 48)
+                b = random.randint(13, 47)
+                retrigger_q = f"{a} + {b} = ?"
+                retrigger_sol = a + b
+                self._wakeup_state = "idle"
+                should_retrigger = True
+
+        if should_retrigger:
+            logger.warning("[AlarmEngine] User missed anti-oversleep confirmation! Re-triggering alarm.")
+            try:
+                await self.trigger_alarm(question=retrigger_q, solution=retrigger_sol)
+            except Exception as e:
+                logger.error(f"[AlarmEngine] Failed anti-oversleep re-trigger: {e}")
 
     async def cancel_alarm(self, session_id: str) -> Dict[str, Any]:
         """Cancels an active alarm session by ID."""
@@ -220,6 +334,9 @@ class AlarmEngine:
 
             self._alarm_epoch = target_epoch
             self._active_session = None
+            self._wakeup_state = "idle"
+            self._wakeup_check_at = 0.0
+            self._wakeup_deadline = 0.0
             logger.info(f"[AlarmEngine] Emergency Stop executed (epoch={target_epoch})")
             return {"success": True, "epoch": target_epoch, "message": "Emergency stop signal sent."}
 

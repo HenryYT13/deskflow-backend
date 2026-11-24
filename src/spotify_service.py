@@ -1,6 +1,8 @@
+import io
 import re
 import time
 import threading
+import colorsys
 import httpx
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
@@ -13,6 +15,49 @@ sp_client = None
 # Cache lưu trữ danh sách lời bài hát [(ms, text), ...]
 cached_track_name = ""
 cached_lyrics_timeline = []
+_cover_color_cache: dict[str, str] = {}
+
+
+def extract_dominant_hex(cover_url: str | None) -> str | None:
+    """Fetches album cover thumbnail and picks the most vibrant dominant color as #RRGGBB."""
+    if not cover_url or not isinstance(cover_url, str):
+        return None
+    cached = _cover_color_cache.get(cover_url)
+    if cached:
+        return cached
+    try:
+        from PIL import Image
+        with httpx.Client(timeout=4.0) as client:
+            resp = client.get(cover_url)
+            if resp.status_code != 200 or not resp.content:
+                return None
+        img = Image.open(io.BytesIO(resp.content)).convert("RGB").resize((24, 24))
+        best_rgb = (255, 255, 255)
+        best_score = -1.0
+        sum_r = sum_g = sum_b = total = 0
+        for r, g, b in img.getdata():
+            sum_r += r
+            sum_g += g
+            sum_b += b
+            total += 1
+            _, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+            # Prefer vivid mid-to-bright colors instead of black/white background pixels
+            if v < 0.18 or v > 0.96:
+                continue
+            score = (s * 1.8) * (0.4 + v)
+            if score > best_score:
+                best_score = score
+                best_rgb = (r, g, b)
+        if best_score < 0.15 and total > 0:
+            best_rgb = (sum_r // total, sum_g // total, sum_b // total)
+        hex_col = f"#{best_rgb[0]:02X}{best_rgb[1]:02X}{best_rgb[2]:02X}"
+        if len(_cover_color_cache) > 64:
+            _cover_color_cache.clear()
+        _cover_color_cache[cover_url] = hex_col
+        return hex_col
+    except Exception as e:
+        logger.debug(f"[Spotify Ambient] Color extract skip: {e}")
+        return None
 
 # Biến lưu trạng thái nội suy tiến trình thời gian thực
 _last_api_fetch_time = 0.0
@@ -336,9 +381,11 @@ def get_current_playing(force_api: bool = False):
             artist_name = ", ".join(a["name"] for a in item.get("artists", []))
             duration_sec = int(duration_ms / 1000)
 
-            # Lấy ảnh bìa Album
+            # Lấy ảnh bìa Album & màu chủ đạo cho Ambient Light
             images = item.get("album", {}).get("images", [])
-            cover_url = images[0]["url"] if images else None
+            cover_url = images[-1]["url"] if images else None
+            display_cover_url = images[0]["url"] if images else cover_url
+            ambient_hex = extract_dominant_hex(cover_url)
 
             # Lấy lời bài hát từ cache hoặc API LrcLib
             timeline = fetch_live_lyrics(track_name, artist_name, duration_sec)
@@ -357,7 +404,8 @@ def get_current_playing(force_api: bool = False):
                 "lyric_next": next_l,
                 "lyrics_window": window_l,
                 "active_lyric_index": active_idx,
-                "cover_url": cover_url,
+                "cover_url": display_cover_url,
+                "ambient_color": ambient_hex,
                 "volume": (playback.get("device") or {}).get("volume_percent")
             }
             return _last_playback_data

@@ -15,12 +15,14 @@ import os
 import json
 import time
 import uuid
+import hashlib
 import random
 import re
 import logging
 import asyncio
 import threading
 import unicodedata
+import httpx
 from datetime import datetime, date, timedelta, timezone
 from typing import Dict, Any, Optional, List
 
@@ -244,6 +246,13 @@ class StationControlManager:
             "battery_high_thresh": 80,
             "quote_schedules": ["06:30", "12:00", "20:00"],
             "clock_style": "digital_classic",
+            "led_effect": "solid",
+            "led_speed": 50,
+            "ambient_sync_enabled": False,
+            "anti_oversleep_enabled": True,
+            "anti_oversleep_delay_sec": 300,
+            "ntfy_topic": "",
+            "tkb_auto_sync_gcal": False,
             "hardware_config_version": 1,
             "applied_by_station": False,
             "last_ack_error": None
@@ -254,11 +263,28 @@ class StationControlManager:
         self.countdowns: List[Dict[str, Any]] = []
         self.active_countdown_id: Optional[str] = None
         self.alarms: List[Dict[str, Any]] = []
+        self.notifications: List[Dict[str, Any]] = []
+        self._ota_status: Dict[str, Any] = {
+            "has_firmware": False,
+            "version": None,
+            "sha256": None,
+            "size_bytes": 0,
+            "uploaded_at": None,
+            "last_flash_at": None,
+            "station_progress": None,
+        }
         self.selected_display_device_id: Optional[str] = None
         self._device_telemetry: Dict[str, Dict[str, Any]] = {}
         self._data_dir = os.path.join(os.path.dirname(__file__), "data")
+        self._ota_dir = os.path.join(self._data_dir, "ota")
         self._settings_file = os.path.join(self._data_dir, "station_settings.json")
         self._load_settings()
+        self._load_ota_metadata()
+        alarm_engine.set_anti_oversleep(
+            enabled=self.device_settings.get("anti_oversleep_enabled", True),
+            delay_sec=self.device_settings.get("anti_oversleep_delay_sec", 300),
+        )
+        alarm_engine.set_notify_hook(self.push_notification)
         self.laptop_status: Dict[str, Any] = {
             "cpu": 0.0,
             "ram": 0.0,
@@ -558,6 +584,25 @@ class StationControlManager:
                     self.device_settings["clock_style"] = style
                     self.mqtt_publish("deskflow/display", json.dumps({"action": "clock_style", "style": style}))
 
+            # LED strip effects, Ambient sync, Anti-oversleep, Phone ntfy, AI TKB sync
+            if "led_effect" in updates and isinstance(updates["led_effect"], str):
+                self.device_settings["led_effect"] = updates["led_effect"].strip().lower()
+            if "led_speed" in updates:
+                self.device_settings["led_speed"] = max(5, min(100, int(updates["led_speed"])))
+            if "ambient_sync_enabled" in updates:
+                self.device_settings["ambient_sync_enabled"] = bool(updates["ambient_sync_enabled"])
+            if "anti_oversleep_enabled" in updates:
+                self.device_settings["anti_oversleep_enabled"] = bool(updates["anti_oversleep_enabled"])
+                alarm_engine.set_anti_oversleep(enabled=self.device_settings["anti_oversleep_enabled"])
+            if "anti_oversleep_delay_sec" in updates:
+                sec = max(30, min(1800, int(updates["anti_oversleep_delay_sec"])))
+                self.device_settings["anti_oversleep_delay_sec"] = sec
+                alarm_engine.set_anti_oversleep(delay_sec=sec)
+            if "ntfy_topic" in updates and isinstance(updates["ntfy_topic"], str):
+                self.device_settings["ntfy_topic"] = updates["ntfy_topic"].strip()
+            if "tkb_auto_sync_gcal" in updates:
+                self.device_settings["tkb_auto_sync_gcal"] = bool(updates["tkb_auto_sync_gcal"])
+
             self._save_settings()
             return dict(self.device_settings)
 
@@ -604,6 +649,7 @@ class StationControlManager:
                 "battery_pct": int(self.device_status.get("battery_pct", 0) or 0),
                 "voltage": float(self.device_status.get("voltage", 0.0) or 0.0),
                 "wifi_rssi": int(self.device_status.get("wifi_rssi", 0) or 0),
+                "fw_version": self.device_status.get("fw_version") or "2.0.3",
                 "current_view": self.device_status.get("active_view") or self.current_screen_mode,
             }
 
@@ -615,7 +661,7 @@ class StationControlManager:
 
     def switch_view(self, view: str, tkb_payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         view_clean = view.strip().lower()
-        valid_views = ("main", "stats", "tkb", "weather", "lyrics", "clock", "notes", "countdown", "focus", "calendar")
+        valid_views = ("main", "stats", "tkb", "weather", "lyrics", "clock", "notes", "countdown", "focus", "calendar", "game")
         if view_clean not in valid_views:
             raise ValueError(f"Invalid view '{view}'. Must be one of {valid_views}.")
 
@@ -678,6 +724,8 @@ class StationControlManager:
         elif view_clean == "calendar":
             self.sync_calendar_to_station()
             self.mqtt_publish("deskflow/display", json.dumps({"action": "switch_view", "view": "calendar"}))
+        elif view_clean == "game":
+            self.mqtt_publish("deskflow/display", json.dumps({"action": "switch_view", "view": "game"}))
 
         return {"success": True, "view": self.current_screen_mode}
 
@@ -1489,6 +1537,144 @@ class StationControlManager:
                     self._save_settings()
                     return a
             return None
+
+    # --- Shopee LED Strip Effects & Ambient Cover Sync ---
+    SUPPORTED_LED_EFFECTS = ("solid", "rainbow", "breathing", "chase", "police", "sparkle", "fire", "strobe", "ambient")
+
+    def set_lamp_effect(self, effect: str, speed: Optional[int] = None, color: Optional[str] = None) -> Dict[str, Any]:
+        eff = str(effect or "solid").strip().lower()
+        if eff not in self.SUPPORTED_LED_EFFECTS:
+            raise ValueError(f"Invalid led_effect '{eff}'. Supported: {self.SUPPORTED_LED_EFFECTS}")
+        with self._config_lock:
+            spd = self.device_settings.get("led_speed", 50) if speed is None else max(5, min(100, int(speed)))
+            self.device_settings["led_effect"] = eff
+            self.device_settings["led_speed"] = spd
+            if eff != "ambient":
+                self.device_settings["ambient_sync_enabled"] = False
+            self._save_settings()
+        if color:
+            self.set_lamp_color(color)
+        payload = {"action": "led_effect", "effect": eff, "speed": spd}
+        msg = json.dumps(payload)
+        self.mqtt_publish("deskflow/display", msg)
+        self.mqtt_publish("deskflow/hardware", msg)
+        return {"success": True, "led_effect": eff, "led_speed": spd}
+
+    def set_ambient_sync(self, enabled: bool) -> Dict[str, Any]:
+        with self._config_lock:
+            self.device_settings["ambient_sync_enabled"] = bool(enabled)
+            if enabled:
+                self.device_settings["led_effect"] = "ambient"
+            elif self.device_settings.get("led_effect") == "ambient":
+                self.device_settings["led_effect"] = "solid"
+            self._save_settings()
+        if not enabled:
+            self.set_lamp_effect("solid")
+        return {"success": True, "ambient_sync_enabled": bool(enabled)}
+
+    # --- ESP32 OTA Firmware Management ---
+    def _load_ota_metadata(self) -> None:
+        meta_path = os.path.join(self._ota_dir, "ota_meta.json")
+        bin_path = os.path.join(self._ota_dir, "firmware_latest.bin")
+        try:
+            if os.path.exists(meta_path) and os.path.exists(bin_path):
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    saved = json.load(f)
+                self._ota_status.update(saved)
+                self._ota_status["has_firmware"] = True
+        except Exception as e:
+            logger.warning(f"[OTA] Could not read ota_meta.json: {e}")
+
+    def get_ota_firmware_path(self) -> Optional[str]:
+        bin_path = os.path.join(self._ota_dir, "firmware_latest.bin")
+        return bin_path if os.path.exists(bin_path) else None
+
+    def save_ota_firmware(self, binary_data: bytes, version: str = "2.1.0", filename: str = "firmware.bin") -> Dict[str, Any]:
+        if not binary_data or len(binary_data) < 1024:
+            raise ValueError("invalid_firmware_binary")
+        os.makedirs(self._ota_dir, exist_ok=True)
+        bin_path = os.path.join(self._ota_dir, "firmware_latest.bin")
+        meta_path = os.path.join(self._ota_dir, "ota_meta.json")
+        sha256_hex = hashlib.sha256(binary_data).hexdigest()
+        with open(bin_path, "wb") as f:
+            f.write(binary_data)
+        meta = {
+            "has_firmware": True,
+            "version": (version or "2.1.0").strip(),
+            "filename": filename,
+            "sha256": sha256_hex,
+            "size_bytes": len(binary_data),
+            "uploaded_at": int(time.time()),
+        }
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+        self._ota_status.update(meta)
+        return dict(self._ota_status)
+
+    def get_ota_status(self) -> Dict[str, Any]:
+        snap = self.get_station_snapshot()
+        return {
+            **self._ota_status,
+            "station_fw_version": snap.get("fw_version", "2.0.3"),
+            "station_online": bool(snap.get("wifi_rssi")),
+        }
+
+    def trigger_ota_flash(self, public_base_url: str = "https://df.api.thetechdude.io.vn") -> Dict[str, Any]:
+        if not self.get_ota_firmware_path():
+            raise FileNotFoundError("no_firmware_uploaded")
+        ver = self._ota_status.get("version") or "2.1.0"
+        url = f"{public_base_url.rstrip('/')}/api/app/control/ota/firmware.bin?v={ver}&t={int(time.time())}"
+        payload = {"action": "ota_update", "url": url, "version": ver}
+        ok = self.mqtt_publish("deskflow/display", json.dumps(payload))
+        self._ota_status["last_flash_at"] = int(time.time())
+        self._ota_status["station_progress"] = "dispatched"
+        return {"success": ok, "url": url, "version": ver}
+
+    def record_ota_progress(self, status: str) -> None:
+        self._ota_status["station_progress"] = status
+
+    # --- Phone & Cross-Device Notification Feed + ntfy Push ---
+    def push_notification(self, kind: str, title: str, body: str, priority: str = "default") -> Dict[str, Any]:
+        ev = {
+            "id": str(uuid.uuid4()),
+            "kind": kind,
+            "title": title,
+            "body": body,
+            "priority": priority,
+            "timestamp": time.time(),
+        }
+        with self._config_lock:
+            self.notifications.append(ev)
+            if len(self.notifications) > 60:
+                self.notifications = self.notifications[-60:]
+            ntfy_topic = str(self.device_settings.get("ntfy_topic") or "").strip()
+
+        if ntfy_topic:
+            threading.Thread(
+                target=self._send_ntfy_sync,
+                args=(ntfy_topic, title, body, priority),
+                daemon=True,
+            ).start()
+        return ev
+
+    @staticmethod
+    def _send_ntfy_sync(topic: str, title: str, body: str, priority: str = "default") -> None:
+        try:
+            url = topic if topic.startswith("http") else f"https://ntfy.sh/{topic.lstrip('/')}"
+            prio_map = {"urgent": "urgent", "high": "high", "default": "default"}
+            headers = {
+                "Title": title.encode("ascii", "ignore").decode("ascii") or "DeskFlow Alert",
+                "Priority": prio_map.get(priority, "default"),
+                "Tags": "DeskFlow,bell",
+            }
+            with httpx.Client(timeout=5.0) as client:
+                client.post(url, content=body.encode("utf-8"), headers=headers)
+        except Exception as e:
+            logger.debug(f"[Notify] ntfy dispatch failed: {e}")
+
+    def get_notifications(self, since: float = 0.0) -> List[Dict[str, Any]]:
+        with self._config_lock:
+            return [n for n in self.notifications if float(n.get("timestamp", 0)) > since]
 
 
 # Global singleton instance
