@@ -1201,6 +1201,106 @@ async def cmd_melody(
     await station_control.play_melody(notes=p["notes"], title=p["title"])
     await interaction.followup.send(f"🎵 Đang phát bài: **{p['title']}** ({len(p['notes'])} nốt) trên còi ESP32!", ephemeral=True)
 
+
+# --- #92 Discord Slash Commands: /rgb, /ota, /game, /morning ---
+@bot.tree.command(name="rgb", description="Điều khiển hiệu ứng đèn LED 24 bóng & Gradient trên DeskFlow")
+@app_commands.describe(
+    effect="Hiệu ứng đèn LED",
+    color="Màu chính HEX (vd #00FF88)",
+    color2="Màu thứ 2 cho Gradient (vd #FF0088)",
+    gradient="Bật/Tắt chế độ dải màu Gradient 2 màu",
+    speed="Tốc độ hiệu ứng (5-100)"
+)
+@app_commands.choices(effect=[
+    app_commands.Choice(name="Đứng yên (Solid)", value="solid"),
+    app_commands.Choice(name="Cầu vồng RGB", value="rainbow"),
+    app_commands.Choice(name="Nhịp thở (Breathing)", value="breathing"),
+    app_commands.Choice(name="Đuổi nhau (Chase)", value="chase"),
+    app_commands.Choice(name="Cảnh sát (Police)", value="police"),
+    app_commands.Choice(name="Lấp lánh (Sparkle)", value="sparkle"),
+    app_commands.Choice(name="Lửa cháy (Fire)", value="fire"),
+    app_commands.Choice(name="Nhấp nháy (Strobe)", value="strobe"),
+    app_commands.Choice(name="Theo bìa Spotify (Ambient)", value="ambient"),
+    app_commands.Choice(name="Tắt đèn (Off)", value="off"),
+])
+async def cmd_rgb(
+    interaction: discord.Interaction,
+    effect: app_commands.Choice[str],
+    color: Optional[str] = None,
+    color2: Optional[str] = None,
+    gradient: Optional[bool] = None,
+    speed: Optional[int] = None,
+):
+    await interaction.response.defer(ephemeral=True)
+    if effect.value == "off":
+        station_control.set_lamp_off()
+        await interaction.followup.send("💡 Đã tắt dải đèn LED!", ephemeral=True)
+        return
+    try:
+        res = station_control.set_lamp_effect(
+            effect.value,
+            speed=speed,
+            color=color,
+            color2=color2,
+            gradient=gradient,
+        )
+        await interaction.followup.send(
+            f"✨ LED updated: **{res.get('led_effect')}** | RGB={res.get('led_rgb')} | Gradient={res.get('led_gradient')} | Speed={res.get('led_speed')}",
+            ephemeral=True,
+        )
+    except Exception as e:
+        await interaction.followup.send(f"❌ Lỗi LED: {e}", ephemeral=True)
+
+
+@bot.tree.command(name="game", description="Chọn & mở Minigame trên màn hình ESP32 (Dino / Flappy / Snake)")
+@app_commands.describe(mode="Chọn tựa game")
+@app_commands.choices(mode=[
+    app_commands.Choice(name="🦖 Dino Runner (Nhảy xương rồng)", value=0),
+    app_commands.Choice(name="🐦 Flappy Bird", value=1),
+    app_commands.Choice(name="🐍 Snake (Rắn săn mồi)", value=2),
+])
+async def cmd_game(interaction: discord.Interaction, mode: app_commands.Choice[int]):
+    await interaction.response.defer(ephemeral=True)
+    res = station_control.set_game_mode(mode.value)
+    station_control.switch_view("game")
+    await interaction.followup.send(f"🎮 Đã chuyển màn hình ESP32 sang **{res.get('name')}**!", ephemeral=True)
+
+
+@bot.tree.command(name="ota", description="Kiểm tra phiên bản OTA hoặc ra lệnh nạp firmware mới xuống ESP32")
+@app_commands.describe(action="Xem trạng thái hoặc nạp ngay")
+@app_commands.choices(action=[
+    app_commands.Choice(name="Xem trạng thái OTA", value="status"),
+    app_commands.Choice(name="Nạp Firmware OTA ngay", value="flash"),
+])
+async def cmd_ota(interaction: discord.Interaction, action: Optional[app_commands.Choice[str]] = None):
+    await interaction.response.defer(ephemeral=True)
+    act = action.value if action else "status"
+    st = station_control.get_ota_status()
+    if act == "flash":
+        try:
+            res = station_control.trigger_ota_flash()
+            await interaction.followup.send(
+                f"🚀 Đã gửi lệnh OTA v**{res.get('version')}** tới ESP32!\nURL: `{res.get('url')}`",
+                ephemeral=True,
+            )
+        except Exception as e:
+            await interaction.followup.send(f"❌ Không thể flash OTA: {e}", ephemeral=True)
+        return
+    await interaction.followup.send(
+        f"📡 **OTA Status**\n• ESP32 hiện tại: `{st.get('station_fw_version')}` ({'Online' if st.get('station_online') else 'Offline'})\n• Firmware trên Server: `{st.get('version') or 'Chưa upload'}` ({st.get('size_bytes', 0)} bytes)",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="morning", description="(#91) Gửi ngay Bản Tin Sáng DeskFlow (Thời tiết, TKB, Google Calendar)")
+async def cmd_morning(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=False)
+    try:
+        embed = await scheduler.build_morning_report_embed()
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Lỗi tạo bản tin sáng: {e}", ephemeral=True)
+
 if __name__ == "__main__":
     spotify_service.init_spotify()
     token = getattr(config, "DISCORD_TOKEN", None) or getattr(config, "DISCORD_BOT_TOKEN", None)

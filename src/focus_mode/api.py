@@ -213,6 +213,8 @@ async def cors_middleware(request: web.Request, handler):
             max_bytes = 4 * 1024 * 1024
         elif request.path.startswith("/api/app/control/melody/"):
             max_bytes = 2 * 1024 * 1024
+        elif request.path == "/api/app/control/restore":
+            max_bytes = 512 * 1024
         else:
             max_bytes = 16384
         if request.content_length is not None and request.content_length > max_bytes:
@@ -247,7 +249,7 @@ async def cors_middleware(request: web.Request, handler):
         logger.error(f"[API] Unhandled server error: {e}", exc_info=True)
         response = error_response("internal", status=500)
 
-    if allow_origin and response is not None:
+    if allow_origin and response is not None and not response.prepared:
         response.headers["Access-Control-Allow-Origin"] = allow_origin
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, Accept"

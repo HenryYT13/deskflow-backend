@@ -443,6 +443,7 @@ class CalendarService:
             "google_token_expires_at": 0,
             "google_connected_email": "",
             "selected_calendar_id": "primary",
+            "selected_calendar_ids": [],
             "selected_calendar_name": "Primary",
             "calendars": [],
             "last_sync_at": None,
@@ -496,6 +497,7 @@ class CalendarService:
                 "google_redirect_uri": redirect_uri,
                 "connected_email": self.config.get("google_connected_email", "") or "",
                 "selected_calendar_id": self.config.get("selected_calendar_id", "primary") or "primary",
+                "selected_calendar_ids": list(self.config.get("selected_calendar_ids") or []),
                 "selected_calendar_name": self.config.get("selected_calendar_name", "Primary") or "Primary",
                 "calendars": list(self.config.get("calendars", []) or []),
                 "last_sync_at": self.config.get("last_sync_at"),
@@ -512,6 +514,7 @@ class CalendarService:
         google_client_secret: Optional[str] = None,
         google_redirect_uri: Optional[str] = None,
         selected_calendar_id: Optional[str] = None,
+        selected_calendar_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         with self._lock:
             if ical_url is not None:
@@ -536,6 +539,8 @@ class CalendarService:
                 match = next((c for c in cals if c.get("id") == cal_id), None)
                 if match:
                     self.config["selected_calendar_name"] = match.get("summary", cal_id)
+            if selected_calendar_ids is not None:
+                self.config["selected_calendar_ids"] = [str(c).strip() for c in selected_calendar_ids if str(c).strip()]
             self.config["last_error"] = None
             self._save()
         return self.get_public_status()
@@ -717,53 +722,66 @@ class CalendarService:
             if calendars:
                 self.config["calendars"] = calendars
             cal_id = str(self.config.get("selected_calendar_id", "primary") or "primary")
-            match = next((c for c in (calendars or []) if c.get("id") == cal_id), None)
-            if match:
-                self.config["selected_calendar_name"] = match.get("summary", cal_id)
-            can_write = (match.get("access_role") in ("owner", "writer")) if match else True
+            extra_ids = list(self.config.get("selected_calendar_ids") or [])
+            target_ids = extra_ids if extra_ids else [cal_id]
+            if cal_id not in target_ids and not extra_ids:
+                target_ids = [cal_id]
 
-        encoded_cal = urllib.parse.quote(cal_id, safe="")
-        resp = await client.get(
-            f"{GOOGLE_API_BASE}/calendars/{encoded_cal}/events",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "singleEvents": "true",
-                "orderBy": "startTime",
-                "timeMin": win_start.isoformat(),
-                "timeMax": win_end.isoformat(),
-                "maxResults": 100,
-            },
-        )
-        if resp.status_code != 200:
-            raise RuntimeError(f"Google Calendar API error ({resp.status_code}): {resp.text[:200]}")
-
+        PALETTE = ["#38BDF8", "#10B981", "#F59E0B", "#A855F7", "#F43F5E", "#14B8A6"]
+        cal_lookup = {c.get("id"): c for c in (calendars or [])}
         out: List[Dict[str, Any]] = []
-        for item in resp.json().get("items", []) or []:
-            if item.get("status") == "cancelled":
-                continue
-            start_obj = item.get("start", {}) or {}
-            end_obj = item.get("end", {}) or {}
-            if "date" in start_obj:
-                try:
-                    sd = datetime.combine(date.fromisoformat(start_obj["date"]), dt_time.min, tzinfo=VN_TZ)
-                    ed_raw = end_obj.get("date") or start_obj["date"]
-                    ed = datetime.combine(date.fromisoformat(ed_raw), dt_time.min, tzinfo=VN_TZ)
-                    all_day = True
-                except Exception:
-                    continue
-            elif "dateTime" in start_obj:
-                try:
-                    sd = datetime.fromisoformat(start_obj["dateTime"].replace("Z", "+00:00")).astimezone(VN_TZ)
-                    ed_str = end_obj.get("dateTime") or start_obj["dateTime"]
-                    ed = datetime.fromisoformat(ed_str.replace("Z", "+00:00")).astimezone(VN_TZ)
-                    all_day = False
-                except Exception:
-                    continue
-            else:
+
+        for idx_c, target_id in enumerate(target_ids):
+            match = cal_lookup.get(target_id)
+            if match and target_id == cal_id:
+                with self._lock:
+                    self.config["selected_calendar_name"] = match.get("summary", target_id)
+            can_write = (match.get("access_role") in ("owner", "writer")) if match else True
+            cal_color = (match.get("background_color") if match else None) or PALETTE[idx_c % len(PALETTE)]
+            cal_summary = (match.get("summary") if match else None) or target_id
+
+            encoded_cal = urllib.parse.quote(target_id, safe="")
+            resp = await client.get(
+                f"{GOOGLE_API_BASE}/calendars/{encoded_cal}/events",
+                headers={"Authorization": f"Bearer {token}"},
+                params={
+                    "singleEvents": "true",
+                    "orderBy": "startTime",
+                    "timeMin": win_start.isoformat(),
+                    "timeMax": win_end.isoformat(),
+                    "maxResults": 100,
+                },
+            )
+            if resp.status_code != 200:
+                if len(target_ids) == 1:
+                    raise RuntimeError(f"Google Calendar API error ({resp.status_code}): {resp.text[:200]}")
                 continue
 
-            out.append(
-                _normalize_event_dict(
+            for item in resp.json().get("items", []) or []:
+                if item.get("status") == "cancelled":
+                    continue
+                start_obj = item.get("start", {}) or {}
+                end_obj = item.get("end", {}) or {}
+                if "date" in start_obj:
+                    try:
+                        sd = datetime.combine(date.fromisoformat(start_obj["date"]), dt_time.min, tzinfo=VN_TZ)
+                        ed_raw = end_obj.get("date") or start_obj["date"]
+                        ed = datetime.combine(date.fromisoformat(ed_raw), dt_time.min, tzinfo=VN_TZ)
+                        all_day = True
+                    except Exception:
+                        continue
+                elif "dateTime" in start_obj:
+                    try:
+                        sd = datetime.fromisoformat(start_obj["dateTime"].replace("Z", "+00:00")).astimezone(VN_TZ)
+                        ed_str = end_obj.get("dateTime") or start_obj["dateTime"]
+                        ed = datetime.fromisoformat(ed_str.replace("Z", "+00:00")).astimezone(VN_TZ)
+                        all_day = False
+                    except Exception:
+                        continue
+                else:
+                    continue
+
+                norm = _normalize_event_dict(
                     event_id=str(item.get("id", "")),
                     uid=str(item.get("iCalUID") or item.get("id", "")),
                     title=str(item.get("summary") or "(Không có tiêu đề)"),
@@ -774,10 +792,13 @@ class CalendarService:
                     description=str(item.get("description") or ""),
                     source="google_oauth",
                     can_delete=can_write,
-                    calendar_id=cal_id,
+                    calendar_id=target_id,
                     html_link=str(item.get("htmlLink") or ""),
                 )
-            )
+                norm["color"] = cal_color
+                norm["calendar_name"] = cal_summary
+                out.append(norm)
+        out.sort(key=lambda e: (e["start_iso"], e["title"].lower()))
         return out
 
     async def _fetch_ical_events(
@@ -1203,6 +1224,51 @@ class CalendarService:
             "skipped": skipped,
             "ai_enhanced": bool(ai_summaries),
         }
+
+    async def ai_quick_add(self, natural_text: str) -> Dict[str, Any]:
+        """#11 Parse natural Vietnamese/English text via Groq AI and create a Google Calendar event."""
+        if not self.is_oauth_connected():
+            raise PermissionError("oauth_not_connected")
+        clean_in = (natural_text or "").strip()
+        if not clean_in:
+            raise ValueError("text_required")
+        import config
+        groq_key = getattr(config, "GROQ_API_KEY", "") or os.getenv("GROQ_API_KEY", "")
+        if not groq_key:
+            raise ValueError("groq_api_key_missing")
+
+        now_vn = datetime.now(VN_TZ)
+        wd_names = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ Nhật"]
+        prompt = (
+            f"Hôm nay là {wd_names[now_vn.weekday()]} ngày {now_vn.date().isoformat()}, giờ hiện tại {now_vn.strftime('%H:%M')} (GMT+7).\n"
+            "Hãy phân tích câu sau thành sự kiện Google Calendar dưới dạng JSON:\n"
+            '{"title": "...", "date": "YYYY-MM-DD", "start_time": "HH:MM", "end_time": "HH:MM", "all_day": false, "location": ""}\n'
+            "Nếu không rõ giờ kết thúc thì cộng thêm 1 tiếng sau start_time. Nếu không có giờ cụ thể thì all_day=true.\n"
+            f"Câu người dùng: {clean_in}"
+        )
+        from groq import Groq
+        def _ask():
+            c = Groq(api_key=groq_key)
+            r = c.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=300,
+                response_format={"type": "json_object"},
+            )
+            return r.choices[0].message.content
+
+        parsed = json.loads(await asyncio.to_thread(_ask) or "{}")
+        ev = await self.create_event(
+            title=str(parsed.get("title") or clean_in),
+            date_str=str(parsed.get("date") or now_vn.date().isoformat()),
+            start_time=str(parsed.get("start_time") or ""),
+            end_time=str(parsed.get("end_time") or ""),
+            all_day=bool(parsed.get("all_day", False)),
+            location=str(parsed.get("location") or ""),
+            description=f"AI Quick Add: {clean_in}",
+        )
+        return {"success": True, "parsed": parsed, "event": ev}
 
     def push_to_station(self) -> bool:
         try:

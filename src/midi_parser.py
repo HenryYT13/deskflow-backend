@@ -22,32 +22,15 @@ def _read_vlq(data: bytes, p: int) -> Tuple[int, int]:
             break
     return val, p
 
-def parse_midi_bytes(
-    midi_bytes: bytes,
-    max_notes: int = 512,
-    auto_transpose: bool = True,
-    filter_bass: bool = True
-) -> List[List[int]]:
-    """
-    Parses SMF Format 0 or Format 1 binary bytes into monophonic [[freq_hz, duration_ms], ...].
-    Multi-voice/polyphonic chords are automatically reduced to the highest melody pitch.
-    Accompaniment basslines and out-of-range low frequencies are filtered and transposed
-    to match the resonant frequency response of piezoelectric buzzers (400 Hz - 2500 Hz).
-    """
+def _extract_midi_chunks(midi_bytes: bytes) -> Tuple[int, int, List[bytes]]:
     if len(midi_bytes) < 14 or midi_bytes[:4] != b"MThd":
         raise ValueError("Invalid MIDI file: Missing 'MThd' header.")
-
     p = 8
     fmt = int.from_bytes(midi_bytes[p:p+2], "big")
     p += 2
-    num_tracks = int.from_bytes(midi_bytes[p:p+2], "big")
+    p += 2  # num_tracks
+    division = int.from_bytes(midi_bytes[p:p+2], "big") or 480
     p += 2
-    division = int.from_bytes(midi_bytes[p:p+2], "big")
-    p += 2
-
-    if division == 0:
-        division = 480
-
     tracks_data: List[bytes] = []
     while p + 8 <= len(midi_bytes):
         chunk_type = midi_bytes[p:p+4]
@@ -57,14 +40,102 @@ def parse_midi_bytes(
         if chunk_type == b"MTrk":
             tracks_data.append(midi_bytes[p:p+chunk_len])
         p += chunk_len
-
     if not tracks_data:
         raise ValueError("Invalid MIDI file: No tracks found.")
+    return fmt, division, tracks_data
+
+
+def inspect_midi_tracks(midi_bytes: bytes) -> Dict[str, Any]:
+    """Lists every track inside a Standard MIDI File so user can pick the Lead Melody track."""
+    fmt, division, tracks_data = _extract_midi_chunks(midi_bytes)
+    tracks_info: List[Dict[str, Any]] = []
+    best_idx = 0
+    best_score = -1.0
+
+    for idx, trk in enumerate(tracks_data):
+        tp = 0
+        status = 0
+        tlen = len(trk)
+        name = ""
+        pitches: List[int] = []
+        while tp < tlen:
+            _, tp = _read_vlq(trk, tp)
+            if tp >= tlen:
+                break
+            b = trk[tp]
+            if b & 0x80:
+                status = b
+                tp += 1
+            cmd = status & 0xF0
+            if status == 0xFF:
+                if tp >= tlen:
+                    break
+                meta_type = trk[tp]; tp += 1
+                meta_len, tp = _read_vlq(trk, tp)
+                if meta_type in (0x03, 0x04) and not name and tp + meta_len <= tlen:
+                    name = trk[tp:tp+meta_len].decode("utf-8", errors="ignore").strip()
+                tp += meta_len
+            elif status in (0xF0, 0xF7):
+                sys_len, tp = _read_vlq(trk, tp)
+                tp += sys_len
+            elif cmd in (0x90, 0x80):
+                if tp + 2 > tlen:
+                    break
+                key = trk[tp]; tp += 1
+                vel = trk[tp]; tp += 1
+                if (status & 0x0F) != 9 and cmd == 0x90 and vel > 0:
+                    pitches.append(key)
+            elif cmd in (0xC0, 0xD0):
+                tp += 1
+            elif cmd in (0xA0, 0xB0, 0xE0):
+                tp += 2
+
+        avg_p = (sum(pitches) / len(pitches)) if pitches else 0.0
+        # Prefer mid-high melodic tracks with plentiful notes
+        if len(pitches) >= 8:
+            score = avg_p + min(80, len(pitches) / 4.0)
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+        tracks_info.append({
+            "index": idx,
+            "name": name or f"Track {idx + 1}",
+            "note_count": len(pitches),
+            "min_pitch": min(pitches) if pitches else 0,
+            "max_pitch": max(pitches) if pitches else 0,
+            "avg_pitch": round(avg_p, 1),
+        })
+
+    return {
+        "format": fmt,
+        "division": division,
+        "track_count": len(tracks_info),
+        "suggested_lead": best_idx,
+        "tracks": tracks_info,
+    }
+
+
+def parse_midi_bytes(
+    midi_bytes: bytes,
+    max_notes: int = 512,
+    auto_transpose: bool = True,
+    filter_bass: bool = True,
+    selected_tracks: Optional[List[int]] = None,
+) -> List[List[int]]:
+    """
+    Parses SMF Format 0 or Format 1 binary bytes into monophonic [[freq_hz, duration_ms], ...].
+    Multi-voice/polyphonic chords are automatically reduced to the highest melody pitch.
+    Accompaniment basslines and out-of-range low frequencies are filtered and transposed
+    to match the resonant frequency response of piezoelectric buzzers (400 Hz - 2500 Hz).
+    """
+    _fmt, division, tracks_data = _extract_midi_chunks(midi_bytes)
+    allowed_tracks = set(selected_tracks) if selected_tracks else None
 
     events: List[Tuple[int, bool, int]] = []
     tempo_changes: List[Tuple[int, int]] = [(0, 500000)] # (tick, microseconds_per_quarter)
 
-    for trk in tracks_data:
+    for trk_idx, trk in enumerate(tracks_data):
+        include_notes = (allowed_tracks is None) or (trk_idx in allowed_tracks)
         tp = 0
         tick = 0
         status = 0
@@ -94,7 +165,7 @@ def parse_midi_bytes(
                 key = trk[tp]; tp += 1
                 vel = trk[tp]; tp += 1
                 channel = status & 0x0F
-                if channel != 9:  # Ignore MIDI channel 10 (drums/percussion)
+                if include_notes and channel != 9:  # Ignore MIDI channel 10 (drums/percussion)
                     events.append((tick, (cmd == 0x90 and vel > 0), key))
             elif cmd in (0xC0, 0xD0):
                 tp += 1

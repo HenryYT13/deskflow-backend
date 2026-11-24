@@ -249,11 +249,17 @@ class StationControlManager:
             "led_effect": "solid",
             "led_speed": 50,
             "led_rgb": False,
+            "lamp_color": "#FFFFFF",
+            "lamp_color2": "#000000",
+            "led_gradient": False,
+            "bpm_sync_enabled": False,
             "ambient_sync_enabled": False,
             "anti_oversleep_enabled": True,
             "anti_oversleep_delay_sec": 300,
             "ntfy_topic": "",
             "tkb_auto_sync_gcal": False,
+            "boot_logo": {"title": "DESKFLOW", "sub": "STATION", "bitmap": ""},
+            "active_mini_game": 0,
             "hardware_config_version": 1,
             "applied_by_station": False,
             "last_ack_error": None
@@ -265,6 +271,7 @@ class StationControlManager:
         self.active_countdown_id: Optional[str] = None
         self.alarms: List[Dict[str, Any]] = []
         self.notifications: List[Dict[str, Any]] = []
+        self._sse_queues: List[Any] = []
         self._ota_status: Dict[str, Any] = {
             "has_firmware": False,
             "version": None,
@@ -279,6 +286,8 @@ class StationControlManager:
         self._data_dir = os.path.join(os.path.dirname(__file__), "data")
         self._ota_dir = os.path.join(self._data_dir, "ota")
         self._settings_file = os.path.join(self._data_dir, "station_settings.json")
+        self._melody_library_file = os.path.join(self._data_dir, "melody_library.json")
+        self._melody_library: List[Dict[str, Any]] = self._load_melody_library()
         self._load_settings()
         self._load_ota_metadata()
         alarm_engine.set_anti_oversleep(
@@ -747,11 +756,9 @@ class StationControlManager:
         )
         return {"success": True, "language": lang}
 
-    def set_lamp_color(self, hex_color: str) -> Dict[str, Any]:
-        """
-        Sets the WS2812B NeoPixel LED lamp color. Accepts any arbitrary hex format:
-        #RRGGBB, RRGGBB, #RGB, 0xRRGGBB, 8-char #AARRGGBB, or named colors (red, cyan, etc.).
-        """
+    @staticmethod
+    def _normalize_hex_color(hex_color: str) -> str:
+        """Normalizes #RRGGBB, RRGGBB, #RGB, 0xRRGGBB, #AARRGGBB, or named colors into #RRGGBB."""
         h = str(hex_color).strip()
         if h.startswith("0x") or h.startswith("0X"):
             h = "#" + h[2:]
@@ -780,9 +787,46 @@ class StationControlManager:
         except ValueError:
             raise ValueError(f"Invalid hex color '{hex_color}'. Use any #RRGGBB (e.g. #FF5500).")
 
-        normalized = f"#{clean.upper()}"
-        self.mqtt_publish("deskflow/display", json.dumps({"action": "led_color", "hex": normalized}))
-        return {"success": True, "hex": normalized}
+        return f"#{clean.upper()}"
+
+    def set_lamp_color(
+        self,
+        hex_color: str,
+        hex_color2: Optional[str] = None,
+        gradient: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Sets WS2812B LED lamp color (with optional #31 dual-color gradient)."""
+        normalized = self._normalize_hex_color(hex_color)
+        normalized2 = (
+            self._normalize_hex_color(hex_color2)
+            if hex_color2
+            else str(self.device_settings.get("lamp_color2") or "#000000")
+        )
+        grad_val = (
+            bool(gradient)
+            if gradient is not None
+            else bool(self.device_settings.get("led_gradient", False))
+        )
+        with self._config_lock:
+            self.device_settings["lamp_color"] = normalized
+            self.device_settings["lamp_color2"] = normalized2
+            self.device_settings["led_gradient"] = grad_val
+            self._save_settings()
+        payload: Dict[str, Any] = {
+            "action": "led_color",
+            "hex": normalized,
+            "hex2": normalized2,
+            "gradient": grad_val,
+        }
+        msg = json.dumps(payload)
+        self.mqtt_publish("deskflow/display", msg)
+        self.mqtt_publish("deskflow/hardware", msg)
+        return {
+            "success": True,
+            "hex": normalized,
+            "hex2": normalized2,
+            "gradient": grad_val,
+        }
 
     def set_lamp_dim(self, led: Optional[Any] = None, screen: Optional[Any] = None) -> Dict[str, Any]:
         """Adjust the WS2812B LED ring brightness (0-100%).
@@ -1550,6 +1594,8 @@ class StationControlManager:
         speed: Optional[int] = None,
         color: Optional[str] = None,
         rgb: Optional[bool] = None,
+        color2: Optional[str] = None,
+        gradient: Optional[bool] = None,
     ) -> Dict[str, Any]:
         eff = str(effect or "solid").strip().lower()
         if eff not in self.SUPPORTED_LED_EFFECTS:
@@ -1566,19 +1612,45 @@ class StationControlManager:
             else:
                 rgb_val = bool(self.device_settings.get("led_rgb", False))
 
+            grad_val = (
+                bool(gradient)
+                if gradient is not None
+                else bool(self.device_settings.get("led_gradient", False))
+            )
+            hex2_val = (
+                self._normalize_hex_color(color2)
+                if color2
+                else str(self.device_settings.get("lamp_color2") or "#000000")
+            )
             self.device_settings["led_effect"] = eff
             self.device_settings["led_speed"] = spd
             self.device_settings["led_rgb"] = rgb_val
+            self.device_settings["led_gradient"] = grad_val
+            self.device_settings["lamp_color2"] = hex2_val
             if eff != "ambient":
                 self.device_settings["ambient_sync_enabled"] = False
             self._save_settings()
         if color:
-            self.set_lamp_color(color)
-        payload = {"action": "led_effect", "effect": eff, "speed": spd, "rgb": rgb_val}
+            self.set_lamp_color(color, hex_color2=hex2_val, gradient=grad_val)
+        payload = {
+            "action": "led_effect",
+            "effect": eff,
+            "speed": spd,
+            "rgb": rgb_val,
+            "gradient": grad_val,
+            "hex2": hex2_val,
+        }
         msg = json.dumps(payload)
         self.mqtt_publish("deskflow/display", msg)
         self.mqtt_publish("deskflow/hardware", msg)
-        return {"success": True, "led_effect": eff, "led_speed": spd, "led_rgb": rgb_val}
+        return {
+            "success": True,
+            "led_effect": eff,
+            "led_speed": spd,
+            "led_rgb": rgb_val,
+            "led_gradient": grad_val,
+            "lamp_color2": hex2_val,
+        }
 
     def set_ambient_sync(self, enabled: bool) -> Dict[str, Any]:
         with self._config_lock:
@@ -1675,6 +1747,7 @@ class StationControlManager:
                 args=(ntfy_topic, title, body, priority),
                 daemon=True,
             ).start()
+        self.broadcast_sse_event("notification", ev)
         return ev
 
     @staticmethod
@@ -1695,6 +1768,272 @@ class StationControlManager:
     def get_notifications(self, since: float = 0.0) -> List[Dict[str, Any]]:
         with self._config_lock:
             return [n for n in self.notifications if float(n.get("timestamp", 0)) > since]
+
+    # --- #71 Real-time SSE Event Broadcast ---
+    def register_sse_queue(self, q: Any) -> None:
+        with self._config_lock:
+            if q not in self._sse_queues:
+                self._sse_queues.append(q)
+
+    def unregister_sse_queue(self, q: Any) -> None:
+        with self._config_lock:
+            if q in self._sse_queues:
+                self._sse_queues.remove(q)
+
+    def broadcast_sse_event(self, event_type: str, data: Any) -> None:
+        with self._config_lock:
+            queues = list(self._sse_queues)
+        if not queues:
+            return
+        payload = {"event": event_type, "data": data, "ts": int(time.time())}
+        for q in queues:
+            try:
+                loop = getattr(q, "_deskflow_loop", None)
+                if loop and not loop.is_closed():
+                    loop.call_soon_threadsafe(self._safe_queue_put, q, payload)
+                else:
+                    self._safe_queue_put(q, payload)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _safe_queue_put(q: Any, item: Any) -> None:
+        try:
+            if q.full():
+                try:
+                    q.get_nowait()
+                except Exception:
+                    pass
+            q.put_nowait(item)
+        except Exception:
+            pass
+
+    # --- #54 Dynamic Spotify BPM Sync ---
+    def set_bpm_sync(self, enabled: bool) -> Dict[str, Any]:
+        with self._config_lock:
+            self.device_settings["bpm_sync_enabled"] = bool(enabled)
+            self._save_settings()
+        return {"success": True, "bpm_sync_enabled": bool(enabled)}
+
+    # --- #28 Custom Boot Logo / Bitmap ---
+    def set_boot_logo(self, title: str = "DESKFLOW", sub: str = "STATION", bitmap: str = "") -> Dict[str, Any]:
+        clean_title = str(title or "DESKFLOW").strip()[:16]
+        clean_sub = str(sub or "").strip()[:20]
+        clean_bmp = re.sub(r"[^0-9a-fA-F]", "", str(bitmap or "")).upper()
+        if clean_bmp and len(clean_bmp) not in (64, 256):
+            raise ValueError("bitmap hex must be 64 chars (16x16) or 256 chars (32x32)")
+        logo_cfg = {"title": clean_title, "sub": clean_sub, "bitmap": clean_bmp}
+        with self._config_lock:
+            self.device_settings["boot_logo"] = logo_cfg
+            self._save_settings()
+        payload = {"action": "boot_logo", **logo_cfg}
+        ok = self.mqtt_publish("deskflow/display", json.dumps(payload, ensure_ascii=False))
+        return {"success": ok, "boot_logo": logo_cfg}
+
+    # --- #23 Mini-Game Mode Selector (0=Dino, 1=Flappy, 2=Snake) ---
+    def set_game_mode(self, mode: int) -> Dict[str, Any]:
+        mode_int = max(0, min(2, int(mode)))
+        mode_names = {0: "Dino Runner", 1: "Flappy Bird", 2: "Snake"}
+        with self._config_lock:
+            self.device_settings["active_mini_game"] = mode_int
+            self._save_settings()
+        payload = {"action": "game_mode", "mode": mode_int}
+        ok = self.mqtt_publish("deskflow/display", json.dumps(payload))
+        return {"success": ok, "mode": mode_int, "name": mode_names[mode_int]}
+
+    # --- #42 Saved Custom Melody Library ---
+    def _load_melody_library(self) -> List[Dict[str, Any]]:
+        try:
+            if os.path.exists(self._melody_library_file):
+                with open(self._melody_library_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        return data
+        except Exception as e:
+            logger.warning(f"[MelodyLib] Load failed: {e}")
+        return []
+
+    def _save_melody_library(self) -> None:
+        os.makedirs(self._data_dir, exist_ok=True)
+        tmp = f"{self._melody_library_file}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(self._melody_library, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, self._melody_library_file)
+
+    def list_saved_melodies(self) -> List[Dict[str, Any]]:
+        with self._config_lock:
+            return [dict(m) for m in self._melody_library]
+
+    def save_custom_melody(self, name: str, notes: List[List[int]], source: str = "custom") -> Dict[str, Any]:
+        clean_name = str(name or "My Melody").strip()[:48] or "My Melody"
+        sanitized: List[List[int]] = []
+        for item in notes or []:
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                continue
+            freq = max(0, min(8000, int(item[0])))
+            dur = max(30, min(4000, int(item[1])))
+            sanitized.append([freq, dur])
+        if not sanitized:
+            raise ValueError("melody must contain at least one [freq, duration_ms] note")
+        entry = {
+            "id": uuid.uuid4().hex[:10],
+            "name": clean_name,
+            "source": str(source or "custom"),
+            "note_count": len(sanitized),
+            "duration_ms": sum(n[1] for n in sanitized),
+            "notes": sanitized[:480],
+            "created_at": int(time.time()),
+        }
+        with self._config_lock:
+            self._melody_library.insert(0, entry)
+            self._melody_library = self._melody_library[:50]
+            self._save_melody_library()
+        return entry
+
+    def delete_saved_melody(self, melody_id: str) -> bool:
+        with self._config_lock:
+            before = len(self._melody_library)
+            self._melody_library = [m for m in self._melody_library if m.get("id") != melody_id]
+            if len(self._melody_library) != before:
+                self._save_melody_library()
+                return True
+            return False
+
+    async def play_saved_melody(self, melody_id: str) -> Dict[str, Any]:
+        target = None
+        with self._config_lock:
+            for m in self._melody_library:
+                if m.get("id") == melody_id:
+                    target = dict(m)
+                    break
+        if not target:
+            raise FileNotFoundError("saved_melody_not_found")
+        return await self.play_melody(notes=target["notes"], title=target["name"])
+
+    # --- #45 Voice TTS Morning Briefing Data ---
+    def build_morning_briefing(self) -> Dict[str, Any]:
+        from timetable import get_dual_day_tkb
+        from calendar_service import calendar_service
+
+        vn_now = datetime.now(timezone(timedelta(hours=7)))
+        snap = self.get_station_snapshot()
+        weather_text = str(snap.get("weather") or self.device_status.get("weather") or "chưa có dữ liệu")
+        tkb = get_dual_day_tkb() or {}
+        today_tkb = tkb.get("today") or {}
+        subjects = today_tkb.get("subjects") or []
+        uniform = today_tkb.get("uniform") or ""
+
+        cal_status = calendar_service.get_public_status() or {}
+        today_events = [e for e in (cal_status.get("events") or []) if e.get("is_today")]
+
+        with self._config_lock:
+            countdowns = sorted(
+                [c for c in self.countdowns if not c.get("is_expired")],
+                key=lambda x: x.get("target_date", "9999"),
+            )
+            notes = list(self.notes)
+
+        subj_txt = ", ".join(subjects[:6]) if subjects else "không có tiết học nào"
+        ev_txt = ", ".join(
+            f"{e.get('start_time', '')} {e.get('title', '')}".strip() for e in today_events[:4]
+        ) or "không có lịch hẹn Google Calendar"
+
+        parts = [
+            f"Chào buổi sáng! Hôm nay là {vn_now.strftime('%d tháng %m năm %Y')}.",
+            f"Thời tiết tại {self.device_settings.get('weather_city', 'Ha Long')} hiện đang là {weather_text}.",
+            f"Thời khóa biểu hôm nay: {subj_txt}.",
+        ]
+        if uniform:
+            parts.append(f"Đồng phục: {uniform}.")
+        parts.append(f"Lịch hẹn trong ngày: {ev_txt}.")
+        if countdowns:
+            top_cd = countdowns[0]
+            try:
+                tgt = date.fromisoformat(str(top_cd.get("target_date")))
+                days_left = (tgt - vn_now.date()).days
+                parts.append(f"Đếm ngược gần nhất: {top_cd.get('title')} còn {days_left} ngày.")
+            except Exception:
+                pass
+        if notes:
+            parts.append(f"Bạn đang có {len(notes)} ghi chú trên bàn làm việc.")
+        parts.append("Chúc bạn một ngày học tập và làm việc thật hiệu quả cùng DeskFlow!")
+
+        return {
+            "tts_text": " ".join(parts),
+            "date": vn_now.strftime("%Y-%m-%d"),
+            "weather": weather_text,
+            "subjects": subjects,
+            "uniform": uniform,
+            "events": today_events[:5],
+            "notes_count": len(notes),
+        }
+
+    # --- #80 1-Click Backup & Restore JSON ---
+    def export_backup(self) -> Dict[str, Any]:
+        from calendar_service import calendar_service
+        with self._config_lock:
+            return {
+                "backup_version": "2.2.0",
+                "exported_at": int(time.time()),
+                "device_settings": dict(self.device_settings),
+                "clock_config": dict(self.clock_config),
+                "notes": list(self.notes),
+                "active_note_id": self.active_note_id,
+                "countdowns": list(self.countdowns),
+                "active_countdown_id": self.active_countdown_id,
+                "alarms": list(self.alarms),
+                "melody_library": list(self._melody_library),
+                "calendar_config": dict(calendar_service.config),
+            }
+
+    def restore_backup(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("invalid_backup_payload")
+        from calendar_service import calendar_service
+
+        restored_sections: List[str] = []
+        with self._config_lock:
+            if isinstance(payload.get("device_settings"), dict):
+                self.device_settings.update(payload["device_settings"])
+                restored_sections.append("device_settings")
+            if isinstance(payload.get("clock_config"), dict):
+                self.clock_config.update(payload["clock_config"])
+                restored_sections.append("clock_config")
+            if isinstance(payload.get("notes"), list):
+                self.notes = payload["notes"]
+                self.active_note_id = payload.get("active_note_id")
+                restored_sections.append("notes")
+            if isinstance(payload.get("countdowns"), list):
+                self.countdowns = payload["countdowns"]
+                self.active_countdown_id = payload.get("active_countdown_id")
+                restored_sections.append("countdowns")
+            if isinstance(payload.get("alarms"), list):
+                self.alarms = payload["alarms"]
+                restored_sections.append("alarms")
+            if isinstance(payload.get("melody_library"), list):
+                self._melody_library = payload["melody_library"][:50]
+                self._save_melody_library()
+                restored_sections.append("melody_library")
+            self._save_settings()
+
+        if isinstance(payload.get("calendar_config"), dict):
+            cfg = payload["calendar_config"]
+            calendar_service.update_config(
+                ics_url=cfg.get("ics_url"),
+                enabled=cfg.get("enabled"),
+                selected_calendar_id=cfg.get("selected_calendar_id"),
+                selected_calendar_ids=cfg.get("selected_calendar_ids"),
+                sync_days=cfg.get("sync_days"),
+            )
+            restored_sections.append("calendar_config")
+
+        try:
+            self.publish_hardware_settings(force=True)
+            self.sync_notes_to_station()
+            self.sync_countdowns_to_station()
+        except Exception:
+            pass
+        return {"success": True, "restored": restored_sections}
 
 
 # Global singleton instance

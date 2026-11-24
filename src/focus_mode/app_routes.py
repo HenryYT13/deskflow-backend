@@ -61,7 +61,7 @@ class AppApiHandler:
         return web.json_response({
             "status": "healthy",
             "service": "deskflow-unified-backend",
-            "version": "2.1.0"
+            "version": "2.2.0"
         })
 
     # --- Control / Alarm ---
@@ -249,8 +249,10 @@ class AppApiHandler:
         hex_color = data.get("hex") or data.get("color")
         if not hex_color or not isinstance(hex_color, str):
             return error_response("invalid_hex_color", status=400)
+        hex_color2 = data.get("hex2") or data.get("color2")
+        gradient = data.get("gradient")
         try:
-            res = station_control.set_lamp_color(hex_color)
+            res = station_control.set_lamp_color(hex_color, hex_color2=hex_color2, gradient=gradient)
             return web.json_response(res)
         except ValueError:
             return error_response("invalid_hex_color", status=400)
@@ -303,8 +305,12 @@ class AppApiHandler:
         speed = data.get("speed")
         color = data.get("color")
         rgb = data.get("rgb")
+        color2 = data.get("color2") or data.get("hex2")
+        gradient = data.get("gradient")
         try:
-            res = station_control.set_lamp_effect(eff, speed=speed, color=color, rgb=rgb)
+            res = station_control.set_lamp_effect(
+                eff, speed=speed, color=color, rgb=rgb, color2=color2, gradient=gradient
+            )
             return web.json_response(res)
         except ValueError as ve:
             return error_response(str(ve), status=400)
@@ -477,7 +483,9 @@ class AppApiHandler:
             from midi_parser import parse_midi_bytes
             try:
                 midi_bytes = base64.b64decode(midi_b64)
-                notes = parse_midi_bytes(midi_bytes)
+                raw_tracks = data.get("selected_tracks")
+                sel_tracks = [int(t) for t in raw_tracks] if isinstance(raw_tracks, list) else None
+                notes = parse_midi_bytes(midi_bytes, selected_tracks=sel_tracks)
                 if not title or title == "Custom Melody":
                     title = data.get("filename", "MIDI Melody")
             except Exception as e:
@@ -493,29 +501,79 @@ class AppApiHandler:
         res = await station_control.stop_melody()
         return web.json_response(res)
 
+    async def _read_midi_request(self, request: web.Request):
+        if request.content_type.startswith("multipart/"):
+            reader = await request.multipart()
+            field = await reader.next()
+            if not field:
+                raise ValueError("no_file_uploaded")
+            filename = field.filename or "Uploaded.mid"
+            content = await field.read()
+        else:
+            content = await request.read()
+            filename = request.headers.get("X-Filename", "Uploaded.mid")
+        return filename, content
+
+    async def handle_melody_inspect(self, request: web.Request) -> web.Response:
+        """(#41) Inspects SMF MIDI chunks/tracks without truncating so UI can pick lead track."""
+        await self._authenticate(request, required_scope="control")
+        from midi_parser import inspect_midi_tracks
+        try:
+            filename, content = await self._read_midi_request(request)
+            info = inspect_midi_tracks(content)
+            return web.json_response({"success": True, "filename": filename, **info})
+        except Exception as e:
+            return error_response(f"midi_inspect_error: {str(e)}", status=400)
+
     async def handle_melody_upload(self, request: web.Request) -> web.Response:
         await self._authenticate(request, required_scope="control")
         from midi_parser import parse_midi_bytes
         try:
-            if request.content_type.startswith("multipart/"):
-                reader = await request.multipart()
-                field = await reader.next()
-                if not field:
-                    return error_response("no_file_uploaded", status=400)
-                filename = field.filename or "Uploaded.mid"
-                content = await field.read()
-            else:
-                content = await request.read()
-                filename = request.headers.get("X-Filename", "Uploaded.mid")
-
-            notes = parse_midi_bytes(content)
+            filename, content = await self._read_midi_request(request)
+            tracks_param = request.query.get("tracks") or request.headers.get("X-Midi-Tracks", "")
+            sel_tracks = [int(t.strip()) for t in tracks_param.split(",") if t.strip().isdigit()] if tracks_param else None
+            notes = parse_midi_bytes(content, selected_tracks=sel_tracks)
             title = filename.rsplit(".", 1)[0]
             res = await station_control.play_melody(notes=notes, title=title)
             res["filename"] = filename
             res["note_count"] = len(notes)
+            res["notes"] = notes[:240]
             return web.json_response(res)
         except Exception as e:
             return error_response(f"midi_parse_error: {str(e)}", status=400)
+
+    async def handle_melody_library_get(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        return web.json_response({"success": True, "items": station_control.list_saved_melodies()})
+
+    async def handle_melody_library_post(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        data = await self._parse_json(request)
+        try:
+            entry = station_control.save_custom_melody(
+                name=str(data.get("name") or "My Melody"),
+                notes=data.get("notes") or [],
+                source=str(data.get("source") or "custom"),
+            )
+            return web.json_response({"success": True, "item": entry, "items": station_control.list_saved_melodies()})
+        except ValueError as e:
+            return error_response(str(e), status=400)
+
+    async def handle_melody_library_delete(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        mid = request.match_info.get("id", "")
+        if station_control.delete_saved_melody(mid):
+            return web.json_response({"success": True, "items": station_control.list_saved_melodies()})
+        return error_response("saved_melody_not_found", status=404)
+
+    async def handle_melody_library_play(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        mid = request.match_info.get("id", "")
+        try:
+            res = await station_control.play_saved_melody(mid)
+            return web.json_response(res)
+        except FileNotFoundError:
+            return error_response("saved_melody_not_found", status=404)
 
     async def handle_alarm_schedule(self, request: web.Request) -> web.Response:
         await self._authenticate(request, required_scope="control")
@@ -1043,6 +1101,7 @@ class AppApiHandler:
                 google_client_secret=data.get("google_client_secret"),
                 google_redirect_uri=data.get("google_redirect_uri"),
                 selected_calendar_id=data.get("selected_calendar_id"),
+                selected_calendar_ids=data.get("selected_calendar_ids"),
             )
             status = await calendar_service.sync_events(push_to_station=True)
             return web.json_response({"success": True, "data": status, **status})
@@ -1168,6 +1227,285 @@ class AppApiHandler:
             logger.error(f"[AppAPI] AI TKB sync error: {e}", exc_info=True)
             return error_response(f"ai_sync_failed: {e}", status=500)
 
+    # --- #11 AI Natural Language Calendar Quick Add ---
+    async def handle_calendar_quick_add(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        data = await self._parse_json(request)
+        text = str(data.get("text") or "").strip()
+        if not text:
+            return error_response("text_required", status=400)
+        try:
+            res = await calendar_service.ai_quick_add(text)
+            status = res.get("status") or {}
+            return web.json_response({
+                "success": True,
+                "created_id": res.get("created_id", ""),
+                "parsed": res.get("parsed", {}),
+                "data": status,
+                **status,
+            })
+        except (PermissionError, ValueError) as e:
+            return error_response(str(e), status=400)
+        except Exception as e:
+            logger.error(f"[AppAPI] Calendar Quick Add error: {e}")
+            return error_response(f"quick_add_failed: {e}", status=500)
+
+    # --- #28 Custom Boot Logo, #23 Game Mode, #54 BPM Sync ---
+    async def handle_boot_logo(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        data = await self._parse_json(request)
+        try:
+            res = station_control.set_boot_logo(
+                title=str(data.get("title") or "DESKFLOW"),
+                sub=str(data.get("sub") or ""),
+                bitmap=str(data.get("bitmap") or ""),
+            )
+            return web.json_response(res)
+        except ValueError as ve:
+            return error_response(str(ve), status=400)
+
+    async def handle_game_mode(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        data = await self._parse_json(request)
+        try:
+            mode = int(data.get("mode", 0))
+            res = station_control.set_game_mode(mode)
+            return web.json_response(res)
+        except (ValueError, TypeError):
+            return error_response("invalid_game_mode", status=400)
+
+    async def handle_lamp_bpm_sync(self, request: web.Request) -> web.Response:
+        await self._authenticate(request)
+        data = await self._parse_json(request)
+        enabled = bool(data.get("enabled", True))
+        return web.json_response(station_control.set_bpm_sync(enabled))
+
+    # --- #58 Spotify Listening Stats Digest ---
+    async def handle_spotify_stats(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="spotify")
+        stats = await asyncio.to_thread(spotify_service.get_listening_stats)
+        return web.json_response({"success": True, "data": stats, **stats})
+
+    # --- #45 Voice TTS Morning Briefing ---
+    async def handle_control_briefing(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        briefing = await asyncio.to_thread(station_control.build_morning_briefing)
+        return web.json_response({"success": True, "data": briefing, **briefing})
+
+    # --- #71 Real-Time SSE Live Stream ---
+    async def handle_stream(self, request: web.Request) -> web.StreamResponse:
+        auth_header = request.headers.get("Authorization")
+        if not auth_header and request.query.get("token"):
+            auth_header = f"Bearer {request.query.get('token')}"
+        device = await self.auth.authenticate_token(auth_header)
+        require_scope(device, "control")
+
+        resp = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+        await resp.prepare(request)
+
+        import json
+        q: asyncio.Queue = asyncio.Queue(maxsize=32)
+        setattr(q, "_deskflow_loop", asyncio.get_running_loop())
+        station_control.register_sse_queue(q)
+        try:
+            init_payload = {
+                "status": station_control.get_station_snapshot(),
+                "settings": station_control.get_settings(),
+            }
+            await resp.write(f"event: snapshot\ndata: {json.dumps(init_payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+            while True:
+                try:
+                    ev = await asyncio.wait_for(q.get(), timeout=15.0)
+                    await resp.write(
+                        f"event: {ev['event']}\ndata: {json.dumps(ev['data'], ensure_ascii=False)}\n\n".encode("utf-8")
+                    )
+                except asyncio.TimeoutError:
+                    snap = station_control.get_station_snapshot()
+                    await resp.write(
+                        f"event: heartbeat\ndata: {json.dumps(snap, ensure_ascii=False)}\n\n".encode("utf-8")
+                    )
+        except (asyncio.CancelledError, ConnectionResetError, Exception):
+            pass
+        finally:
+            station_control.unregister_sse_queue(q)
+        return resp
+
+    # --- #73 AI DeskFlow Copilot Chat & Action Dispatcher ---
+    async def _execute_copilot_action(self, action_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        if action_name == "lamp_color":
+            return station_control.set_lamp_color(
+                str(args.get("hex") or "#FFFFFF"),
+                hex_color2=args.get("hex2"),
+                gradient=args.get("gradient"),
+            )
+        if action_name == "lamp_effect":
+            return station_control.set_lamp_effect(
+                str(args.get("effect") or "breathing"),
+                speed=args.get("speed"),
+                color=args.get("color"),
+                rgb=args.get("rgb"),
+            )
+        if action_name == "lamp_off":
+            return station_control.set_lamp_off()
+        if action_name == "switch_view":
+            return station_control.switch_view(str(args.get("view") or "main"))
+        if action_name == "start_focus":
+            return station_control.start_timer(int(args.get("minutes") or 25))
+        if action_name == "create_note":
+            return station_control.add_note(
+                title=str(args.get("title") or "AI Note"),
+                content=str(args.get("content") or ""),
+            )
+        if action_name == "create_alarm":
+            return station_control.save_alarm({
+                "time": str(args.get("time") or "07:00"),
+                "label": str(args.get("label") or "DeskFlow AI Alarm"),
+                "enabled": True,
+            })
+        if action_name == "quick_add_event":
+            return await calendar_service.ai_quick_add(str(args.get("text") or ""))
+        if action_name == "game_mode":
+            return station_control.set_game_mode(int(args.get("mode", 0)))
+        return {"skipped": True}
+
+    async def handle_ai_chat(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        data = await self._parse_json(request)
+        message = str(data.get("message") or "").strip()
+        if not message:
+            return error_response("message_required", status=400)
+
+        import json
+        snap = station_control.get_station_snapshot()
+        ctx_summary = (
+            f"Weather={snap.get('weather')}, Track={snap.get('spotify_track')}, "
+            f"Mode={snap.get('current_screen_mode')}, LED={station_control.device_settings.get('led_effect')}"
+        )
+
+        reply = "Mình đã ghi nhận yêu cầu của bạn."
+        action_obj: Dict[str, Any] = {"action": "none", "args": {}}
+        action_result: Optional[Dict[str, Any]] = None
+
+        groq_client = getattr(station_control, "_groq_client", None)
+        if groq_client:
+            sys_prompt = (
+                "You are DeskFlow AI Copilot. Respond concisely in Vietnamese. "
+                "Output STRICT JSON with keys: {\"reply\": string, \"action\": string, \"args\": object}. "
+                "Supported actions: "
+                "\"lamp_color\" ({hex, hex2?, gradient?}), "
+                "\"lamp_effect\" ({effect: solid|rainbow|breathing|chase|police|sparkle|fire|strobe|ambient, speed?, rgb?}), "
+                "\"lamp_off\" ({}), "
+                "\"switch_view\" ({view: main|tkb|calendar|note|exam|quote|timer|game|alarm}), "
+                "\"start_focus\" ({minutes}), "
+                "\"create_note\" ({title, content}), "
+                "\"create_alarm\" ({time: HH:MM, label}), "
+                "\"quick_add_event\" ({text}), "
+                "\"game_mode\" ({mode: 0|1|2}), "
+                "\"none\" ({}). Only pick an action if user clearly requests a device/app command."
+            )
+            try:
+                def _call_groq():
+                    comp = groq_client.chat.completions.create(
+                        model="llama-3.1-8b-instant",
+                        messages=[
+                            {"role": "system", "content": sys_prompt},
+                            {"role": "user", "content": f"Context: {ctx_summary}\nUser: {message}"},
+                        ],
+                        temperature=0.2,
+                        max_completion_tokens=300,
+                    )
+                    return comp.choices[0].message.content or ""
+
+                raw = await asyncio.to_thread(_call_groq)
+                m = re.search(r"\{[\s\S]*\}", raw)
+                if m:
+                    parsed = json.loads(m.group(0))
+                    reply = str(parsed.get("reply") or reply)
+                    action_obj = {
+                        "action": str(parsed.get("action") or "none"),
+                        "args": parsed.get("args") if isinstance(parsed.get("args"), dict) else {},
+                    }
+            except Exception as e:
+                logger.warning(f"[AI Copilot] Groq fallback: {e}")
+                reply = f"Trạm hiện tại: {ctx_summary}. (AI đang dùng chế độ nhanh)"
+
+        act_name = action_obj.get("action", "none")
+        if act_name and act_name != "none":
+            try:
+                action_result = await self._execute_copilot_action(act_name, action_obj.get("args") or {})
+            except Exception as e:
+                action_result = {"error": str(e)}
+
+        return web.json_response({
+            "success": True,
+            "reply": reply,
+            "action": act_name,
+            "action_result": action_result,
+        })
+
+    # --- #78 Shareable Public Desk Status & Live Badge SVG (No private data) ---
+    def _build_public_status(self) -> Dict[str, Any]:
+        snap = station_control.get_station_snapshot()
+        return {
+            "online": bool(snap.get("wifi_rssi") is not None and snap.get("station_online", True)),
+            "version": "2.2.0",
+            "mode": snap.get("current_screen_mode", "main"),
+            "weather": snap.get("weather", "N/A"),
+            "spotify_track": snap.get("spotify_track", "Idle"),
+            "spotify_artist": snap.get("spotify_artist", ""),
+            "led_effect": station_control.device_settings.get("led_effect", "solid"),
+        }
+
+    async def handle_public_status(self, request: web.Request) -> web.Response:
+        return web.json_response({"success": True, **self._build_public_status()})
+
+    async def handle_public_badge_svg(self, request: web.Request) -> web.Response:
+        import html
+        info = self._build_public_status()
+        track = html.escape(str(info.get("spotify_track") or "Idle")[:36])
+        weather = html.escape(str(info.get("weather") or "DeskFlow")[:20])
+        label = "DeskFlow Live"
+        status_txt = f"{weather} • {track}"
+        width = max(210, min(460, 115 + len(status_txt) * 7))
+        svg = (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="24" role="img" aria-label="DeskFlow Live">'
+            f'<rect width="{width}" height="24" rx="4" fill="#111114"/>'
+            f'<rect x="1" y="1" width="{width-2}" height="22" rx="3" fill="none" stroke="#27272A"/>'
+            f'<circle cx="12" cy="12" r="4" fill="#22C55E"/>'
+            f'<text x="22" y="16" fill="#FFFFFF" font-family="ui-monospace,SFMono-Regular,monospace" font-size="11" font-weight="600">{label}</text>'
+            f'<text x="110" y="16" fill="#A1A1AA" font-family="ui-sans-serif,system-ui,sans-serif" font-size="11">{status_txt}</text>'
+            f'</svg>'
+        )
+        return web.Response(
+            text=svg,
+            content_type="image/svg+xml",
+            headers={"Cache-Control": "no-cache, max-age=30"},
+        )
+
+    # --- #80 1-Click Backup & Restore JSON ---
+    async def handle_backup_export(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        backup = await asyncio.to_thread(station_control.export_backup)
+        return web.json_response({"success": True, "backup": backup, **backup})
+
+    async def handle_backup_restore(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        data = await self._parse_json(request)
+        payload = data.get("backup") if isinstance(data.get("backup"), dict) else data
+        try:
+            res = await asyncio.to_thread(station_control.restore_backup, payload)
+            return web.json_response(res)
+        except ValueError as ve:
+            return error_response(str(ve), status=400)
+
 
 def register_app_routes(app: web.Application, auth: FocusAuth) -> None:
     handler = AppApiHandler(auth=auth)
@@ -1188,10 +1526,16 @@ def register_app_routes(app: web.Application, auth: FocusAuth) -> None:
     app.router.add_post("/api/app/control/alarm/schedule", handler.handle_alarm_schedule)
     app.router.add_post("/api/app/control/morse/play", handler.handle_morse_play)
     app.router.add_post("/api/app/control/morse/stop", handler.handle_morse_stop)
+    app.router.add_get("/api/app/melody/presets", handler.handle_melody_presets)
     app.router.add_get("/api/app/control/melody/presets", handler.handle_melody_presets)
     app.router.add_post("/api/app/control/melody/play", handler.handle_melody_play)
+    app.router.add_post("/api/app/control/melody/inspect", handler.handle_melody_inspect)
     app.router.add_post("/api/app/control/melody/upload", handler.handle_melody_upload)
     app.router.add_post("/api/app/control/melody/stop", handler.handle_melody_stop)
+    app.router.add_get("/api/app/control/melody/library", handler.handle_melody_library_get)
+    app.router.add_post("/api/app/control/melody/library", handler.handle_melody_library_post)
+    app.router.add_delete("/api/app/control/melody/library/{id}", handler.handle_melody_library_delete)
+    app.router.add_post("/api/app/control/melody/library/{id}/play", handler.handle_melody_library_play)
 
     # Persistent Alarms
     app.router.add_get("/api/app/control/alarms", handler.handle_alarms_get)
@@ -1258,6 +1602,7 @@ def register_app_routes(app: web.Application, auth: FocusAuth) -> None:
 
     # Spotify
     app.router.add_get("/api/app/spotify/status", handler.handle_spotify_status)
+    app.router.add_get("/api/app/spotify/stats", handler.handle_spotify_stats)
     app.router.add_post("/api/app/spotify/playback", handler.handle_spotify_playback)
     app.router.add_post("/api/app/spotify/volume", handler.handle_spotify_volume)
 
@@ -1267,11 +1612,24 @@ def register_app_routes(app: web.Application, auth: FocusAuth) -> None:
     app.router.add_post("/api/app/calendar/config", handler.handle_calendar_config)
     app.router.add_post("/api/app/calendar/sync", handler.handle_calendar_sync)
     app.router.add_post("/api/app/calendar/events", handler.handle_calendar_create_event)
+    app.router.add_post("/api/app/calendar/quick-add", handler.handle_calendar_quick_add)
     app.router.add_delete("/api/app/calendar/events/{id}", handler.handle_calendar_delete_event)
     app.router.add_post("/api/app/calendar/oauth/start", handler.handle_calendar_oauth_start)
     app.router.add_get("/api/app/calendar/oauth/callback", handler.handle_calendar_oauth_callback)
     app.router.add_post("/api/app/calendar/oauth/disconnect", handler.handle_calendar_oauth_disconnect)
     app.router.add_post("/api/app/calendar/ai-sync-tkb", handler.handle_calendar_ai_sync_tkb)
+
+    # v2.2.0 Hardware, AI Copilot, Briefing, SSE, Backup & Public Badge
+    app.router.add_post("/api/app/control/lamp/bpm-sync", handler.handle_lamp_bpm_sync)
+    app.router.add_post("/api/app/control/boot-logo", handler.handle_boot_logo)
+    app.router.add_post("/api/app/control/game/mode", handler.handle_game_mode)
+    app.router.add_get("/api/app/control/briefing", handler.handle_control_briefing)
+    app.router.add_get("/api/app/control/backup", handler.handle_backup_export)
+    app.router.add_post("/api/app/control/restore", handler.handle_backup_restore)
+    app.router.add_get("/api/app/stream", handler.handle_stream)
+    app.router.add_post("/api/app/ai/chat", handler.handle_ai_chat)
+    app.router.add_get("/api/public/status", handler.handle_public_status)
+    app.router.add_get("/api/public/badge.svg", handler.handle_public_badge_svg)
 
     # Also register CORS options preflight for /api/app/*
     async def options_app_handler(request: web.Request) -> web.Response:

@@ -264,6 +264,7 @@ async def get_weather_forecast(city: Optional[str] = None) -> Dict[str, Any]:
     return res
 
 _last_ambient_hex: str | None = None
+_last_bpm_track_id: str | None = None
 _notified_event_ids: set[str] = set()
 
 
@@ -278,23 +279,40 @@ async def calendar_sync_job():
 
 
 async def ambient_cover_sync_job():
-    """Đồng bộ màu bìa album Spotify sang đèn WS2812B ESP32 khi ambient_sync_enabled=True."""
-    global _last_ambient_hex
+    """Đồng bộ màu bìa album Spotify & tốc độ BPM sang đèn WS2812B ESP32."""
+    global _last_ambient_hex, _last_bpm_track_id
     try:
+        import asyncio
         import station_control
         import spotify_service
         sc = station_control.station_control
-        if not sc.device_settings.get("ambient_sync_enabled", False):
+        ambient_on = bool(sc.device_settings.get("ambient_sync_enabled", False))
+        bpm_on = bool(sc.device_settings.get("bpm_sync_enabled", False))
+        if not ambient_on and not bpm_on:
             _last_ambient_hex = None
+            _last_bpm_track_id = None
             return
         sp = await asyncio.to_thread(spotify_service.get_current_playing, False)
         if not sp or not sp.get("is_playing"):
             return
-        hex_col = sp.get("ambient_color")
-        if hex_col and hex_col != _last_ambient_hex:
-            _last_ambient_hex = hex_col
-            sc.set_lamp_color(hex_col)
-            logger.info(f"[Ambient] Spotify cover -> LED {hex_col} ({sp.get('track')})")
+        if ambient_on:
+            hex_col = sp.get("ambient_color")
+            if hex_col and hex_col != _last_ambient_hex:
+                _last_ambient_hex = hex_col
+                sc.set_lamp_color(hex_col)
+                logger.info(f"[Ambient] Spotify cover -> LED {hex_col} ({sp.get('track')})")
+        if bpm_on:
+            track_id = str(sp.get("track_id") or "")
+            bpm = sp.get("bpm")
+            if bpm and track_id and track_id != _last_bpm_track_id:
+                _last_bpm_track_id = track_id
+                # Map typical 60..170 BPM -> LED speed 15..98
+                mapped_speed = max(15, min(98, int(round((float(bpm) - 50.0) * 0.72 + 15.0))))
+                eff = str(sc.device_settings.get("led_effect") or "breathing")
+                if eff in ("solid", "ambient"):
+                    eff = "breathing"
+                sc.set_lamp_effect(eff, speed=mapped_speed)
+                logger.info(f"[BPM Sync] {sp.get('track')} ({bpm} BPM) -> {eff} @ speed {mapped_speed}")
     except Exception as e:
         logger.debug(f"[Ambient Sync] Skip: {e}")
 
@@ -350,6 +368,60 @@ async def ai_tkb_weekly_cron_job():
         logger.warning(f"[AI TKB Weekly Cron] {e}")
 
 
+async def build_morning_report_embed():
+    """(#91) Tạo Discord Embed bản tin sáng: Thời tiết, TKB, Google Calendar & Gợi ý."""
+    import asyncio
+    import discord
+    import station_control
+
+    sc = station_control.station_control
+    briefing = await asyncio.to_thread(sc.build_morning_briefing)
+    subjects_txt = "\n".join(f"• {s}" for s in (briefing.get("subjects") or [])) or "• Trống lịch học"
+    events_list = briefing.get("events") or []
+    events_txt = "\n".join(
+        f"• `{e.get('start_time', 'Cả ngày')}` {e.get('title', '')}" for e in events_list
+    ) or "• Không có sự kiện Calendar hôm nay"
+
+    embed = discord.Embed(
+        title=f"🌅 Bản Tin Sáng DeskFlow — {briefing.get('date')}",
+        description=briefing.get("tts_text", "")[:350],
+        color=0xFFFFFF,
+    )
+    embed.add_field(name="🌤 Thời tiết", value=briefing.get("weather") or "N/A", inline=True)
+    embed.add_field(name="👔 Đồng phục", value=briefing.get("uniform") or "Tự do", inline=True)
+    embed.add_field(name="📝 Ghi chú", value=f"{briefing.get('notes_count', 0)} ghi chú", inline=True)
+    embed.add_field(name="📚 Thời khóa biểu hôm nay", value=subjects_txt[:1000], inline=False)
+    embed.add_field(name="📅 Google Calendar", value=events_txt[:1000], inline=False)
+    embed.set_footer(text="DeskFlow v2.2.0 • Daily 06:30 VN Report")
+    return embed
+
+
+async def send_morning_report(target=None) -> bool:
+    """(#91) Gửi bản tin sáng tới DM Owner hoặc Discord channel/interaction."""
+    try:
+        embed = await build_morning_report_embed()
+        if target is not None:
+            await target.send(embed=embed)
+            return True
+        if not bot_ref:
+            return False
+        owner_id = getattr(config, "OWNER_USER_ID", None)
+        if not owner_id:
+            return False
+        user = bot_ref.get_user(owner_id) or await bot_ref.fetch_user(owner_id)
+        if user:
+            await user.send(embed=embed)
+            logger.info("[Scheduler] Sent daily Discord Morning Report DM.")
+            return True
+    except Exception as e:
+        logger.warning(f"[Morning Report] Failed: {e}")
+    return False
+
+
+async def morning_report_job():
+    await send_morning_report()
+
+
 def setup_scheduler(bot, mqtt_client):
     global bot_ref, mqtt_ref, scheduler_instance
     bot_ref = bot
@@ -391,6 +463,12 @@ def setup_scheduler(bot, mqtt_client):
         ai_tkb_weekly_cron_job,
         CronTrigger(day_of_week="mon", hour=6, minute=0, timezone="Asia/Ho_Chi_Minh"),
         id="ai_tkb_weekly_cron_job",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        morning_report_job,
+        CronTrigger(hour=6, minute=30, timezone="Asia/Ho_Chi_Minh"),
+        id="morning_report_job",
         replace_existing=True,
     )
     

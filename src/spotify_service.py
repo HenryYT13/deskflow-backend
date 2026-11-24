@@ -1,4 +1,6 @@
 import io
+import json
+import os
 import re
 import time
 import threading
@@ -16,6 +18,94 @@ sp_client = None
 cached_track_name = ""
 cached_lyrics_timeline = []
 _cover_color_cache: dict[str, str] = {}
+_bpm_cache: dict[str, float | None] = {}
+_history_file = os.path.join(os.path.dirname(__file__), "data", "spotify_history.json")
+_history_lock = threading.Lock()
+_last_recorded_key = ""
+
+
+def _record_listening_history(track: str, artist: str, album: str, cover_url: str | None, duration_ms: int) -> None:
+    global _last_recorded_key
+    key = f"{track}|{artist}"
+    if not track or key == _last_recorded_key:
+        return
+    _last_recorded_key = key
+    with _history_lock:
+        try:
+            os.makedirs(os.path.dirname(_history_file), exist_ok=True)
+            rows = []
+            if os.path.exists(_history_file):
+                with open(_history_file, "r", encoding="utf-8") as f:
+                    rows = json.load(f) or []
+            rows.append({
+                "track": track,
+                "artist": artist,
+                "album": album,
+                "cover_url": cover_url,
+                "duration_ms": duration_ms,
+                "played_at": int(time.time()),
+            })
+            if len(rows) > 300:
+                rows = rows[-300:]
+            with open(_history_file, "w", encoding="utf-8") as f:
+                json.dump(rows, f, ensure_ascii=False)
+        except Exception as e:
+            logger.debug(f"[Spotify History] Save skip: {e}")
+
+
+def get_listening_stats() -> dict:
+    with _history_lock:
+        rows = []
+        try:
+            if os.path.exists(_history_file):
+                with open(_history_file, "r", encoding="utf-8") as f:
+                    rows = json.load(f) or []
+        except Exception:
+            rows = []
+
+    track_counts: dict[str, dict] = {}
+    artist_counts: dict[str, int] = {}
+    total_ms = 0
+    for r in rows:
+        t = str(r.get("track") or "")
+        a = str(r.get("artist") or "Unknown")
+        if not t:
+            continue
+        total_ms += int(r.get("duration_ms") or 180000)
+        k = f"{t} — {a}"
+        if k not in track_counts:
+            track_counts[k] = {"track": t, "artist": a, "cover_url": r.get("cover_url"), "plays": 0}
+        track_counts[k]["plays"] += 1
+        for part in [p.strip() for p in a.split(",") if p.strip()]:
+            artist_counts[part] = artist_counts.get(part, 0) + 1
+
+    top_tracks = sorted(track_counts.values(), key=lambda x: x["plays"], reverse=True)[:8]
+    top_artists = [{"artist": k, "plays": v} for k, v in sorted(artist_counts.items(), key=lambda kv: kv[1], reverse=True)[:6]]
+    return {
+        "total_plays": len(rows),
+        "estimated_minutes": int(round(total_ms / 60000.0)),
+        "top_tracks": top_tracks,
+        "top_artists": top_artists,
+        "recent": list(reversed(rows[-10:])),
+    }
+
+
+def _fetch_track_bpm(track_id: str | None) -> float | None:
+    if not track_id or not sp_client:
+        return None
+    if track_id in _bpm_cache:
+        return _bpm_cache[track_id]
+    bpm_val: float | None = None
+    try:
+        feats = sp_client.audio_features([track_id])
+        if feats and isinstance(feats, list) and feats[0] and feats[0].get("tempo"):
+            bpm_val = round(float(feats[0]["tempo"]), 1)
+    except Exception:
+        bpm_val = None
+    if len(_bpm_cache) > 128:
+        _bpm_cache.clear()
+    _bpm_cache[track_id] = bpm_val
+    return bpm_val
 
 
 def extract_dominant_hex(cover_url: str | None) -> str | None:
@@ -377,15 +467,20 @@ def get_current_playing(force_api: bool = False):
             progress_ms = playback.get("progress_ms", 0)
             duration_ms = item.get("duration_ms", 1)
             progress_pct = int((progress_ms / duration_ms) * 100) if duration_ms > 0 else 0
+            track_id = item.get("id")
             track_name = item.get("name", "Unknown Track")
             artist_name = ", ".join(a["name"] for a in item.get("artists", []))
+            album_name = item.get("album", {}).get("name", "")
             duration_sec = int(duration_ms / 1000)
 
-            # Lấy ảnh bìa Album & màu chủ đạo cho Ambient Light
+            # Lấy ảnh bìa Album & màu chủ đạo cho Ambient Light + BPM + History
             images = item.get("album", {}).get("images", [])
             cover_url = images[-1]["url"] if images else None
             display_cover_url = images[0]["url"] if images else cover_url
             ambient_hex = extract_dominant_hex(cover_url)
+            bpm_val = _fetch_track_bpm(track_id)
+            if playback.get("is_playing"):
+                _record_listening_history(track_name, artist_name, album_name, display_cover_url, duration_ms)
 
             # Lấy lời bài hát từ cache hoặc API LrcLib
             timeline = fetch_live_lyrics(track_name, artist_name, duration_sec)
@@ -395,7 +490,8 @@ def get_current_playing(force_api: bool = False):
                 "is_playing": playback.get("is_playing", False),
                 "track": track_name,
                 "artist": artist_name,
-                "album": item.get("album", {}).get("name", ""),
+                "album": album_name,
+                "bpm": bpm_val,
                 "base_progress_ms": progress_ms,
                 "progress_ms": progress_ms,
                 "duration_ms": duration_ms,
