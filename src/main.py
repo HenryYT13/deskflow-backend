@@ -1414,7 +1414,7 @@ async def cmd_screenshot(interaction: discord.Interaction):
     import io
     await interaction.followup.send(
         content="📸 **ESP32 ST7789 Screenshot (240×320)**",
-        file=discord.File(fp=io.BytesIO(raw), filename="deskflow_esp32.bmp"),
+        file=discord.File(fp=io.BytesIO(raw), filename="deskflow_esp32.png"),
     )
 
 

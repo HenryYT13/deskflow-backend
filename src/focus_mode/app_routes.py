@@ -1841,7 +1841,7 @@ class AppApiHandler:
         raw = station_control.get_latest_screenshot_bytes()
         if not raw:
             return error_response("no_screenshot", status=404)
-        return web.Response(body=raw, content_type="image/bmp", headers={"Cache-Control": "no-store"})
+        return web.Response(body=raw, content_type="image/png", headers={"Cache-Control": "no-store"})
 
     # --- (#57) GitHub Stats & ESP32 HTTP Pair-Code Fallback ---
     async def handle_github_sync(self, request: web.Request) -> web.Response:

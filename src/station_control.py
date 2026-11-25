@@ -2041,11 +2041,9 @@ class StationControlManager:
         while len(pixels_565) < total_px:
             pixels_565.append(0)
 
-        row_stride = (w * 3 + 3) & ~3
-        pixel_array = bytearray(row_stride * h)
+        rgb_array = bytearray(w * h * 3)
         for y in range(h):
-            # BMP stores bottom-up rows
-            dst_row = (h - 1 - y) * row_stride
+            dst_row = y * w * 3
             src_row = y * w
             for x in range(w):
                 c = pixels_565[src_row + x]
@@ -2053,28 +2051,32 @@ class StationControlManager:
                 g8 = ((c >> 5) & 0x3F) * 255 // 63
                 b8 = (c & 0x1F) * 255 // 31
                 off = dst_row + x * 3
-                pixel_array[off] = b8
-                pixel_array[off + 1] = g8
-                pixel_array[off + 2] = r8
+                rgb_array[off] = r8
+                rgb_array[off + 1] = g8
+                rgb_array[off + 2] = b8
 
-        file_size = 54 + len(pixel_array)
-        header = struct.pack("<2sIHHI", b"BM", file_size, 0, 0, 54)
-        dib = struct.pack("<IIIHHIIIIII", 40, w, h, 1, 24, 0, len(pixel_array), 2835, 2835, 0, 0)
-        bmp_bytes = header + dib + bytes(pixel_array)
-        out_path = os.path.join(self._data_dir, "latest_screenshot.bmp")
+        from PIL import Image
+        out_path = os.path.join(self._data_dir, "latest_screenshot.png")
         os.makedirs(self._data_dir, exist_ok=True)
-        with open(out_path, "wb") as f:
-            f.write(bmp_bytes)
+        img = Image.frombytes("RGB", (w, h), bytes(rgb_array))
+        img.save(out_path, format="PNG", optimize=True)
         with self._config_lock:
             self.device_settings["last_screenshot_at"] = int(time.time())
             self._save_settings()
         return {"success": True, "size_bytes": len(bmp_bytes), "width": w, "height": h}
 
     def get_latest_screenshot_bytes(self) -> Optional[bytes]:
-        out_path = os.path.join(self._data_dir, "latest_screenshot.bmp")
+        out_path = os.path.join(self._data_dir, "latest_screenshot.png")
         if os.path.exists(out_path):
             with open(out_path, "rb") as f:
                 return f.read()
+        legacy_bmp = os.path.join(self._data_dir, "latest_screenshot.bmp")
+        if os.path.exists(legacy_bmp):
+            from PIL import Image
+            import io
+            buf = io.BytesIO()
+            Image.open(legacy_bmp).save(buf, format="PNG")
+            return buf.getvalue()
         return None
 
     # --- #57 GitHub Contributions & CI Status Sync ---
