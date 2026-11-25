@@ -532,18 +532,63 @@ class CalendarService:
             if google_redirect_uri is not None:
                 uri = google_redirect_uri.strip()
                 self.config["google_redirect_uri"] = uri or DEFAULT_REDIRECT_URI
-            if selected_calendar_id is not None:
+            if selected_calendar_ids is not None:
+                clean_ids = [str(c).strip() for c in selected_calendar_ids if str(c).strip()]
+                self.config["selected_calendar_ids"] = clean_ids
+                # Ensure the primary write calendar (selected_calendar_id) isn't stuck on a read-only calendar
+                cals = self.config.get("calendars", []) or []
+                cal_map = {c.get("id"): c for c in cals if isinstance(c, dict)}
+                cur_id = str(self.config.get("selected_calendar_id") or "")
+                cur_writable = cal_map.get(cur_id, {}).get("access_role") in ("owner", "writer")
+                if not cur_writable or (clean_ids and cur_id not in clean_ids):
+                    writable_pick = next(
+                        (cid for cid in clean_ids if cal_map.get(cid, {}).get("access_role") in ("owner", "writer")),
+                        None,
+                    ) or next(
+                        (c.get("id") for c in cals if c.get("access_role") in ("owner", "writer")),
+                        "primary",
+                    )
+                    self.config["selected_calendar_id"] = writable_pick
+                    if cal_map.get(writable_pick):
+                        self.config["selected_calendar_name"] = cal_map[writable_pick].get("summary", writable_pick)
+            elif selected_calendar_id is not None:
+                # Single-select fallback: still preserve read-only protection if user picked primary/writable
                 cal_id = selected_calendar_id.strip() or "primary"
                 self.config["selected_calendar_id"] = cal_id
                 cals = self.config.get("calendars", []) or []
                 match = next((c for c in cals if c.get("id") == cal_id), None)
                 if match:
                     self.config["selected_calendar_name"] = match.get("summary", cal_id)
-            if selected_calendar_ids is not None:
-                self.config["selected_calendar_ids"] = [str(c).strip() for c in selected_calendar_ids if str(c).strip()]
             self.config["last_error"] = None
             self._save()
         return self.get_public_status()
+
+    def _resolve_writable_calendar_id(self, requested_id: Optional[str] = None) -> str:
+        """Picks a calendar with owner/writer access so create_event & AI sync never fail with 403 on holiday calendars."""
+        cals = self.config.get("calendars", []) or []
+        cal_map = {c.get("id"): c for c in cals if isinstance(c, dict)}
+
+        def _is_writable(cid: Optional[str]) -> bool:
+            if not cid:
+                return False
+            c = str(cid).strip()
+            if c in cal_map:
+                return cal_map[c].get("access_role") in ("owner", "writer")
+            if "#holiday@" in c or "#contacts@" in c:
+                return False
+            return True
+
+        candidates: List[Optional[str]] = [
+            requested_id,
+            self.config.get("selected_calendar_id"),
+            *(self.config.get("selected_calendar_ids") or []),
+            next((c.get("id") for c in cals if c.get("primary")), None),
+            *(c.get("id") for c in cals),
+        ]
+        for cand in candidates:
+            if cand and _is_writable(cand):
+                return str(cand).strip()
+        return "primary"
 
     def build_oauth_start_url(self) -> Dict[str, Any]:
         with self._lock:
@@ -721,8 +766,22 @@ class CalendarService:
         with self._lock:
             if calendars:
                 self.config["calendars"] = calendars
+            cal_map_tmp = {c.get("id"): c for c in (calendars or []) if isinstance(c, dict)}
             cal_id = str(self.config.get("selected_calendar_id", "primary") or "primary")
             extra_ids = list(self.config.get("selected_calendar_ids") or [])
+            if cal_map_tmp and cal_id in cal_map_tmp and cal_map_tmp[cal_id].get("access_role") not in ("owner", "writer"):
+                writable_fallback = next(
+                    (cid for cid in extra_ids if cal_map_tmp.get(cid, {}).get("access_role") in ("owner", "writer")),
+                    None,
+                ) or next(
+                    (c.get("id") for c in calendars if c.get("access_role") in ("owner", "writer")),
+                    cal_id,
+                )
+                cal_id = writable_fallback
+                self.config["selected_calendar_id"] = cal_id
+                if cal_map_tmp.get(cal_id):
+                    self.config["selected_calendar_name"] = cal_map_tmp[cal_id].get("summary", cal_id)
+                self._save()
             target_ids = extra_ids if extra_ids else [cal_id]
             if cal_id not in target_ids and not extra_ids:
                 target_ids = [cal_id]
@@ -920,7 +979,7 @@ class CalendarService:
         with self._lock:
             if not self.config.get("google_refresh_token"):
                 raise PermissionError("google_oauth_required")
-            target_cal = (calendar_id or self.config.get("selected_calendar_id") or "primary").strip()
+            target_cal = self._resolve_writable_calendar_id(calendar_id)
 
         body: Dict[str, Any] = {
             "summary": clean_title,
@@ -976,7 +1035,7 @@ class CalendarService:
         with self._lock:
             if not self.config.get("google_refresh_token"):
                 raise PermissionError("google_oauth_required")
-            target_cal = (calendar_id or self.config.get("selected_calendar_id") or "primary").strip()
+            target_cal = self._resolve_writable_calendar_id(calendar_id)
 
         async with httpx.AsyncClient(timeout=20.0) as client:
             token = await self._ensure_access_token(client)
