@@ -61,7 +61,7 @@ class AppApiHandler:
         return web.json_response({
             "status": "healthy",
             "service": "deskflow-unified-backend",
-            "version": "2.4.0"
+            "version": "2.4.1"
         })
 
     # --- Control / Alarm ---
@@ -448,6 +448,19 @@ class AppApiHandler:
             return web.json_response(res)
         except FileNotFoundError as fnf:
             return error_response(str(fnf), status=404)
+
+    async def handle_station_ota_trigger(self, request: web.Request) -> web.Response:
+        """Allows ESP32 hardware Settings menu to pull latest GitHub Release .bin and get its URL."""
+        try:
+            res = await station_control.check_and_pull_latest_ota(auto_flash=False)
+            ver = str(res.get("latest_version") or res.get("version") or "2.4.1").lstrip("v")
+            return web.json_response({
+                "success": True,
+                "version": ver,
+                "bin_url": "https://df.api.thetechdude.io.vn/api/app/control/ota/firmware.bin",
+            })
+        except Exception as e:
+            return error_response(f"ota_trigger_failed: {e}", status=502)
 
     async def handle_clock_style_get(self, request: web.Request) -> web.Response:
         try:
@@ -2006,6 +2019,7 @@ def register_app_routes(app: web.Application, auth: FocusAuth) -> None:
     app.router.add_post("/api/app/control/ota/upload", handler.handle_ota_upload)
     app.router.add_get("/api/app/control/ota/firmware.bin", handler.handle_ota_firmware_download)
     app.router.add_post("/api/app/control/ota/flash", handler.handle_ota_flash)
+    app.router.add_post("/api/app/station/ota-trigger", handler.handle_station_ota_trigger)
     app.router.add_get("/api/app/control/clock-style", handler.handle_clock_style_get)
     app.router.add_post("/api/app/control/clock-style", handler.handle_clock_style)
 
