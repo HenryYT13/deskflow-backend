@@ -1053,26 +1053,6 @@ async def cmd_focus(interaction: discord.Interaction, minutes: int = 25):
     station_control.publish_mqtt("deskflow/timer/start", json.dumps({"minutes": max(1, min(180, minutes)), "label": "Focus"}))
     await interaction.response.send_message(f"🎯 Đã kích hoạt **Focus {minutes} phút** trên DeskFlow!", ephemeral=True)
 
-@bot.tree.command(name="led", description="(#429) Đổi hiệu ứng vòng 24 LED (rainbow, breathe, chase, clock, off)")
-@app_commands.describe(effect="Tên hiệu ứng LED")
-async def cmd_led(interaction: discord.Interaction, effect: str = "rainbow"):
-    if effect.lower() == "off":
-        await station_control.set_lamp(on=False)
-        await interaction.response.send_message("💡 Đã tắt vòng LED.", ephemeral=True)
-    else:
-        await station_control.set_lamp(on=True, effect=effect.lower())
-        await interaction.response.send_message(f"✨ Đã bật hiệu ứng LED: **{effect}**", ephemeral=True)
-
-@bot.tree.command(name="tkb", description="(#429) Xem thời khóa biểu hôm nay hoặc ngày mai")
-@app_commands.describe(day="today hoặc tomorrow")
-async def cmd_tkb(interaction: discord.Interaction, day: str = "today"):
-    from datetime import datetime, timedelta
-    idx = (datetime.now() + timedelta(days=1 if day.lower() in ("tomorrow", "mai") else 0)).weekday()
-    sched = timetable.get_schedule_for_weekday(idx) if hasattr(timetable, "get_schedule_for_weekday") else {}
-    periods = sched.get("periods") or []
-    txt = "\n".join(f"• Tiết {p.get('period')}: **{p.get('subject')}** ({p.get('time', '')})" for p in periods) or "Nghỉ / Không có tiết."
-    await interaction.response.send_message(f"📅 **Thời khóa biểu ({day})**:\n{txt}", ephemeral=True)
-
 @bot.tree.command(name="todo", description="(#429) Thêm nhanh ghi chú/việc cần làm lên DeskFlow")
 @app_commands.describe(text="Nội dung việc cần làm")
 async def cmd_todo(interaction: discord.Interaction, text: str):
