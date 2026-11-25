@@ -420,6 +420,7 @@ def on_connect(client, userdata, flags, rc, properties=None):
         client.subscribe("deskflow/hardware_settings_ack")
         client.subscribe("deskflow/hardware_settings_request")
         client.subscribe("deskflow/pair_request")
+        client.subscribe("deskflow/screenshot")
     else:
         logger.error(f"[MQTT Error] Lỗi kết nối Broker: rc={rc}")
 
@@ -436,9 +437,7 @@ def on_message(client, userdata, msg):
 
     if topic == config.TOPIC_STATUS_UPDATE:
         device_status.update(data)
-        # The station reports which screen it is really displaying (button
-        # presses, local menu, another app...). Keep the backend in sync so all
-        # clients show the same "current view".
+        device_status["last_seen"] = time.time()
         reported_view = data.get("active_view")
         if isinstance(reported_view, str) and reported_view.strip():
             station_control.sync_station_view(reported_view)
@@ -452,9 +451,21 @@ def on_message(client, userdata, msg):
         elif action == "station_language_update":
             station_control.on_station_language_update(data)
         elif action == "confirm_awake":
-            asyncio.run_coroutine_threadsafe(alarm_engine.confirm_awake(), bot.loop)
+            asyncio.run_coroutine_threadsafe(alarm_engine.confirm_awake(bypass_captcha=True), bot.loop)
         elif action == "ota_progress":
             station_control.record_ota_progress(str(data.get("status") or "updating"))
+    elif topic == "deskflow/screenshot":
+        try:
+            import base64
+            w = int(data.get("width") or 240)
+            h = int(data.get("height") or 320)
+            b64 = str(data.get("rle_b64") or "")
+            if b64:
+                raw_rle = base64.b64decode(b64)
+                station_control.save_screenshot_rgb565_rle(w, h, raw_rle)
+                logger.info(f"[Screenshot] Captured {w}x{h} frame ({len(raw_rle)} bytes RLE)")
+        except Exception as se:
+            logger.warning(f"[Screenshot] Decode error: {se}")
     elif topic == config.TOPIC_MATH_TRIGGER:
         device_status["math_active"] = True
         device_status["current_math_answer"] = str(data.get("answer"))
@@ -680,6 +691,36 @@ class DeskFlowBot(discord.Client):
                 }
                 if mqtt_client and mqtt_client.is_connected():
                     mqtt_publish_logged("deskflow/telemetry", json.dumps(payload, ensure_ascii=False), qos=1)
+
+                # (#117) Laptop Battery Threshold Protection Alert (>=80% unplug, 1..24% plug in)
+                if lp_bat and 0 < int(lp_bat) <= 100 and (is_selected_online or (time.time() - laptop_status.get("last_seen", 0)) < 15.0):
+                    now_bat_ts = time.time()
+                    last_bat_alert = getattr(self, "_last_laptop_bat_alert_ts", 0.0)
+                    last_bat_kind = getattr(self, "_last_laptop_bat_alert_kind", "")
+                    bat_int = int(lp_bat)
+                    alert_kind = ""
+                    if bat_int >= 80:
+                        alert_kind = "high"
+                    elif bat_int < 25:
+                        alert_kind = "low"
+                    if alert_kind and (alert_kind != last_bat_kind or (now_bat_ts - last_bat_alert) >= 900.0):
+                        self._last_laptop_bat_alert_ts = now_bat_ts
+                        self._last_laptop_bat_alert_kind = alert_kind
+                        msg_t = (
+                            f"Pin Laptop đã đạt {bat_int}% (>=80%) — hãy rút sạc để bảo vệ pin!"
+                            if alert_kind == "high"
+                            else f"Pin Laptop còn {bat_int}% (<25%) — hãy cắm sạc ngay!"
+                        )
+                        station_control.push_notification("laptop_battery", "Bảo vệ Pin Laptop", msg_t, "high")
+                        if mqtt_client and mqtt_client.is_connected():
+                            mqtt_publish_logged("deskflow/alarm", json.dumps({"action": "buzz", "duration": 180}), qos=1)
+                            mqtt_publish_logged("deskflow/display", json.dumps({
+                                "action": "webhook_flash",
+                                "color": "#22C55E" if alert_kind == "high" else "#EF4444",
+                                "summary": f"Laptop Bat {bat_int}%!",
+                            }), qos=0)
+                    elif 30 <= bat_int <= 75:
+                        self._last_laptop_bat_alert_kind = ""
 
                 tkb_ticks += 1
                 if tkb_ticks >= 5:
@@ -1138,50 +1179,24 @@ async def cmd_tkb(interaction: discord.Interaction, day: app_commands.Choice[str
     app_commands.Choice(name="Phần cứng (Stats)", value="stats"),
     app_commands.Choice(name="Thời khóa biểu (TKB)", value="tkb"),
     app_commands.Choice(name="Lịch Google (Calendar)", value="calendar"),
-    app_commands.Choice(name="Thời tiết (Weather)", value="weather"),
-    app_commands.Choice(name="Lời bài hát (Lyrics)", value="lyrics")
+    app_commands.Choice(name="Thời tiết & AQI (Weather)", value="weather"),
+    app_commands.Choice(name="Lời bài hát (Lyrics)", value="lyrics"),
+    app_commands.Choice(name="Đĩa than Spotify (Vinyl)", value="vinyl"),
+    app_commands.Choice(name="Matrix Rain (#51)", value="matrix"),
+    app_commands.Choice(name="GitHub Stats (#57)", value="github"),
+    app_commands.Choice(name="Công thức & Bảng tuần hoàn (#11)", value="formulas"),
+    app_commands.Choice(name="Arcade Game Hub (#23/#58-#63)", value="game"),
 ])
 async def cmd_view(interaction: discord.Interaction, screen: app_commands.Choice[str]):
     await interaction.response.defer(ephemeral=True)
     global current_screen_mode
     current_screen_mode = screen.value
 
-    if current_screen_mode == "main":
-        mqtt_publish_logged("deskflow/display", json.dumps({"action": "switch_view", "view": "main"}))
-    elif current_screen_mode == "stats":
-        srv = get_server_metrics()
-        payload = {
-            "action": "switch_view",
-            "view": "stats",
-            "server": srv,
-            "laptop": {
-                "cpu": laptop_status.get("cpu", 0),
-                "ram": laptop_status.get("ram", 0),
-                "temp": laptop_status.get("temp", 0),
-                "battery": laptop_status.get("battery", 0),
-                "online": (time.time() - laptop_status.get("last_seen", 0)) < 60
-            }
-        }
-        mqtt_publish_logged("deskflow/display", json.dumps(payload))
-    elif current_screen_mode == "tkb":
-        tkb_payload = await build_tkb_payload()
-        if tkb_payload:
-            tkb_payload["action"] = "switch_view"
-            mqtt_publish_logged("deskflow/display", json.dumps(tkb_payload, ensure_ascii=False))
-    elif current_screen_mode == "weather":
-        payload = {
-            "action": "switch_view",
-            "view": "weather",
-            "city": clean_ascii(device_settings.get("weather_city", "Ha Long")),
-            "weather": clean_ascii(device_status.get("weather", "28*C"))
-        }
-        mqtt_publish_logged("deskflow/display", json.dumps(payload, ensure_ascii=False))
-    elif current_screen_mode == "lyrics":
-        payload = {"action": "switch_view", "view": "lyrics", "curr": "Dang dong bo...", "next": ""}
-        mqtt_publish_logged("deskflow/display", json.dumps(payload, ensure_ascii=False))
-    elif current_screen_mode == "calendar":
-        station_control.sync_calendar_to_station()
-        mqtt_publish_logged("deskflow/display", json.dumps({"action": "switch_view", "view": "calendar"}, ensure_ascii=False))
+    if current_screen_mode in ("main", "stats", "tkb", "weather", "lyrics", "calendar", "vinyl", "matrix", "github", "formulas", "game"):
+        if current_screen_mode == "github":
+            await station_control.sync_github_stats()
+        tkb_p = await build_tkb_payload() if current_screen_mode == "tkb" else None
+        station_control.switch_view(current_screen_mode, tkb_payload=tkb_p)
 
     await interaction.followup.send(f"📺 Đã chuyển trạm sang màn hình: **{screen.name}**", ephemeral=True)
 
@@ -1352,6 +1367,26 @@ async def cmd_ota(interaction: discord.Interaction, action: Optional[app_command
     await interaction.followup.send(
         f"📡 **OTA Status**\n• ESP32 hiện tại: `{st.get('station_fw_version')}` ({'Online' if st.get('station_online') else 'Offline'})\n• Firmware trên Server: `{st.get('version') or 'Chưa upload'}` ({st.get('size_bytes', 0)} bytes)",
         ephemeral=True,
+    )
+
+
+@bot.tree.command(name="screenshot", description="(#75) Chụp màn hình ST7789 trên ESP32 và gửi ảnh về Discord")
+async def cmd_screenshot(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=False)
+    prev_ts = int(station_control.device_settings.get("last_screenshot_at") or 0)
+    station_control.request_screenshot()
+    for _ in range(25):
+        await asyncio.sleep(0.25)
+        if int(station_control.device_settings.get("last_screenshot_at") or 0) > prev_ts:
+            break
+    raw = station_control.get_latest_screenshot_bytes()
+    if not raw:
+        await interaction.followup.send("⏳ ESP32 chưa phản hồi ảnh chụp màn hình.", ephemeral=True)
+        return
+    import io
+    await interaction.followup.send(
+        content="📸 **ESP32 ST7789 Screenshot (240×320)**",
+        file=discord.File(fp=io.BytesIO(raw), filename="deskflow_esp32.bmp"),
     )
 
 

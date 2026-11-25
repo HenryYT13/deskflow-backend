@@ -506,10 +506,45 @@ class CalendarService:
                 "calendars": list(self.config.get("calendars", []) or []),
                 "last_sync_at": self.config.get("last_sync_at"),
                 "last_error": self.config.get("last_error"),
+                "holidays": sorted(list(self.config.get("holidays") or [])),
+                "is_today_holiday": self.is_today_holiday(),
                 "events": events,
                 "today_count": sum(1 for e in events if e.get("is_today")),
                 "upcoming_count": len(events),
             }
+
+    def is_holiday_date(self, date_str: str) -> bool:
+        with self._lock:
+            return str(date_str).strip() in (self.config.get("holidays") or [])
+
+    def is_today_holiday(self) -> bool:
+        today_str = datetime.now(VN_TZ).strftime("%Y-%m-%d")
+        return self.is_holiday_date(today_str)
+
+    def toggle_holiday_date(self, date_str: str, is_holiday: Optional[bool] = None) -> Dict[str, Any]:
+        clean = str(date_str or "").strip()
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", clean):
+            raise ValueError("date must be YYYY-MM-DD")
+        with self._lock:
+            cur = set(self.config.get("holidays") or [])
+            if is_holiday is None:
+                if clean in cur:
+                    cur.remove(clean)
+                else:
+                    cur.add(clean)
+            elif is_holiday:
+                cur.add(clean)
+            else:
+                cur.discard(clean)
+            self.config["holidays"] = sorted(cur)
+            self._save()
+        return {
+            "success": True,
+            "date": clean,
+            "is_holiday": clean in cur,
+            "holidays": sorted(cur),
+            "is_today_holiday": self.is_today_holiday(),
+        }
 
     def update_config(
         self,

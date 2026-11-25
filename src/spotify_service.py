@@ -65,6 +65,8 @@ def get_listening_stats() -> dict:
 
     track_counts: dict[str, dict] = {}
     artist_counts: dict[str, int] = {}
+    hour_counts: dict[int, int] = {}
+    days_set: set[str] = set()
     total_ms = 0
     for r in rows:
         t = str(r.get("track") or "")
@@ -72,6 +74,12 @@ def get_listening_stats() -> dict:
         if not t:
             continue
         total_ms += int(r.get("duration_ms") or 180000)
+        ts = int(r.get("played_at") or 0)
+        if ts > 0:
+            from datetime import datetime, timezone, timedelta
+            dt_vn = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=7)))
+            hour_counts[dt_vn.hour] = hour_counts.get(dt_vn.hour, 0) + 1
+            days_set.add(dt_vn.strftime("%Y-%m-%d"))
         k = f"{t} — {a}"
         if k not in track_counts:
             track_counts[k] = {"track": t, "artist": a, "cover_url": r.get("cover_url"), "plays": 0}
@@ -79,15 +87,82 @@ def get_listening_stats() -> dict:
         for part in [p.strip() for p in a.split(",") if p.strip()]:
             artist_counts[part] = artist_counts.get(part, 0) + 1
 
-    top_tracks = sorted(track_counts.values(), key=lambda x: x["plays"], reverse=True)[:8]
-    top_artists = [{"artist": k, "plays": v} for k, v in sorted(artist_counts.items(), key=lambda kv: kv[1], reverse=True)[:6]]
+    top_tracks = sorted(track_counts.values(), key=lambda x: x["plays"], reverse=True)[:10]
+    top_artists = [{"artist": k, "plays": v} for k, v in sorted(artist_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]]
+    peak_hr = max(hour_counts.items(), key=lambda kv: kv[1])[0] if hour_counts else None
+    est_min = int(round(total_ms / 60000.0))
     return {
         "total_plays": len(rows),
-        "estimated_minutes": int(round(total_ms / 60000.0)),
+        "estimated_minutes": est_min,
+        "estimated_hours": round(est_min / 60.0, 1),
+        "unique_tracks": len(track_counts),
+        "active_days": len(days_set),
+        "peak_hour": f"{peak_hr:02d}:00 - {(peak_hr + 1) % 24:02d}:00" if peak_hr is not None else "N/A",
         "top_tracks": top_tracks,
         "top_artists": top_artists,
         "recent": list(reversed(rows[-10:])),
     }
+
+
+def get_playback_queue() -> dict:
+    """(#132) Lấy danh sách bài hát tiếp theo trong hàng chờ Spotify."""
+    global sp_client
+    if not sp_client:
+        return {"connected": False, "queue": []}
+    try:
+        q = sp_client.queue()
+        items = []
+        for it in (q.get("queue") or [])[:15]:
+            imgs = (it.get("album") or {}).get("images") or []
+            items.append({
+                "id": it.get("id", ""),
+                "name": it.get("name", "Unknown"),
+                "artist": ", ".join(a.get("name", "") for a in (it.get("artists") or [])),
+                "album": (it.get("album") or {}).get("name", ""),
+                "duration_ms": it.get("duration_ms", 0),
+                "cover_url": imgs[-1].get("url") if imgs else None,
+            })
+        curr = q.get("currently_playing")
+        return {
+            "connected": True,
+            "current": (curr or {}).get("name") if isinstance(curr, dict) else None,
+            "queue": items,
+        }
+    except Exception as e:
+        logger.debug(f"[Spotify Queue] {e}")
+        return {"connected": bool(sp_client), "queue": [], "error": str(e)}
+
+
+def get_available_devices() -> list:
+    """(#140) Liệt kê các thiết bị Spotify Connect khả dụng."""
+    global sp_client
+    if not sp_client:
+        return []
+    try:
+        res = sp_client.devices() or {}
+        return [
+            {
+                "id": d.get("id"),
+                "name": d.get("name", "Unknown Device"),
+                "type": d.get("type", "Computer"),
+                "is_active": bool(d.get("is_active", False)),
+                "volume_percent": d.get("volume_percent"),
+            }
+            for d in (res.get("devices") or [])
+            if d.get("id")
+        ]
+    except Exception as e:
+        logger.debug(f"[Spotify Devices] {e}")
+        return []
+
+
+def transfer_playback_device(device_id: str, force_play: bool = True) -> dict:
+    """(#140) Chuyển phát nhạc Spotify sang thiết bị đích."""
+    global sp_client
+    if not sp_client:
+        raise RuntimeError("spotify_not_connected")
+    sp_client.transfer_playback(device_id=device_id, force_play=force_play)
+    return {"success": True, "device_id": device_id}
 
 
 def _fetch_track_bpm(track_id: str | None) -> float | None:

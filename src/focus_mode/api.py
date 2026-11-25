@@ -211,9 +211,9 @@ async def cors_middleware(request: web.Request, handler):
     try:
         if request.path.startswith("/api/app/control/ota/"):
             max_bytes = 4 * 1024 * 1024
-        elif request.path.startswith("/api/app/control/melody/"):
+        elif request.path.startswith("/api/app/control/melody/") or request.path.startswith("/api/app/control/timetable/upload") or request.path.startswith("/api/app/station/screenshot"):
             max_bytes = 2 * 1024 * 1024
-        elif request.path == "/api/app/control/restore":
+        elif request.path == "/api/app/control/restore" or request.path.startswith("/api/webhooks/"):
             max_bytes = 512 * 1024
         else:
             max_bytes = 16384

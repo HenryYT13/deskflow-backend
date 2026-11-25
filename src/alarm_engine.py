@@ -64,24 +64,28 @@ class AlarmEngine:
         self._lock = asyncio.Lock()
         self._alarm_epoch: int = 0
         self._active_session: Optional[AlarmSession] = None
-        # Anti-oversleep (Wake-up verification) state
+        # Anti-oversleep (Wake-up verification) state (#102 level 1/2)
         self.anti_oversleep_enabled: bool = True
         self.anti_oversleep_delay_sec: int = 300
+        self.anti_oversleep_level: int = 1  # 1 = 1-tap button, 2 = captcha/keyword challenge
         self._wakeup_state: str = "idle"  # idle | waiting | prompt
         self._wakeup_check_at: float = 0.0
         self._wakeup_deadline: float = 0.0
         self._wakeup_question: str = ""
         self._wakeup_solution: int = 0
+        self._wakeup_captcha: str = ""
         self._notify_hook = None
 
     def set_notify_hook(self, hook) -> None:
         self._notify_hook = hook
 
-    def set_anti_oversleep(self, enabled: Optional[bool] = None, delay_sec: Optional[int] = None) -> None:
+    def set_anti_oversleep(self, enabled: Optional[bool] = None, delay_sec: Optional[int] = None, level: Optional[int] = None) -> None:
         if enabled is not None:
             self.anti_oversleep_enabled = bool(enabled)
         if delay_sec is not None:
             self.anti_oversleep_delay_sec = max(30, min(1800, int(delay_sec)))
+        if level is not None:
+            self.anti_oversleep_level = 2 if int(level) >= 2 else 1
 
     def _emit_notify(self, kind: str, title: str, body: str, priority: str = "high") -> None:
         if self._notify_hook:
@@ -121,11 +125,13 @@ class AlarmEngine:
             base = {
                 "anti_oversleep_enabled": self.anti_oversleep_enabled,
                 "anti_oversleep_delay_sec": self.anti_oversleep_delay_sec,
+                "anti_oversleep_level": self.anti_oversleep_level,
                 "wakeup_state": self._wakeup_state,
                 "wakeup_pending": self._wakeup_state == "prompt",
                 "wakeup_waiting": self._wakeup_state == "waiting",
                 "wakeup_check_at": self._wakeup_check_at if self._wakeup_state != "idle" else None,
                 "wakeup_deadline": self._wakeup_deadline if self._wakeup_state == "prompt" else None,
+                "wakeup_captcha": self._wakeup_captcha if (self._wakeup_state == "prompt" and self.anti_oversleep_level >= 2) else "",
             }
             if not self._active_session:
                 return {
@@ -235,19 +241,45 @@ class AlarmEngine:
                 "message": "Alarm solved and silenced.",
             }
 
-    async def confirm_awake(self) -> Dict[str, Any]:
+    async def confirm_awake(self, captcha: Optional[str] = None, bypass_captcha: bool = False) -> Dict[str, Any]:
         """Confirms the user is actually awake, cancelling pending anti-oversleep re-trigger."""
         async with self._lock:
+            if (
+                not bypass_captcha
+                and self._wakeup_state == "prompt"
+                and self.anti_oversleep_level >= 2
+                and self._wakeup_captcha
+            ):
+                if str(captcha or "").strip().upper() != self._wakeup_captcha.upper():
+                    raise ValueError("wakeup_captcha_mismatch")
             was_state = self._wakeup_state
             self._wakeup_state = "idle"
             self._wakeup_check_at = 0.0
             self._wakeup_deadline = 0.0
+            self._wakeup_captcha = ""
             try:
                 self._publish_alarm_mqtt({"action": "wakeup_confirmed"})
             except AlarmPublishError:
                 pass
             logger.info(f"[AlarmEngine] Wake-up confirmed by user (previous state={was_state}).")
             return {"success": True, "previous_state": was_state}
+
+    async def shake_dismiss_active_alarm(self, shakes: int = 20) -> Dict[str, Any]:
+        """(#103) Android accelerometer Shake 20x alarm challenge dismiss."""
+        if int(shakes) < 20:
+            raise ValueError("insufficient_shakes")
+        async with self._lock:
+            target_epoch = self._alarm_epoch + 1
+            if self._active_session:
+                self._publish_alarm_mqtt({"action": "stop_alarm", "session_id": self._active_session.session_id, "epoch": target_epoch, "method": "shake_20x"})
+                self._alarm_epoch = target_epoch
+                self._active_session = None
+            else:
+                self._publish_alarm_mqtt({"action": "stop_alarm", "epoch": target_epoch, "method": "shake_20x"})
+                self._alarm_epoch = target_epoch
+            self._wakeup_state = "idle"
+            self._wakeup_captcha = ""
+            return {"success": True, "method": "shake_20x", "epoch": target_epoch}
 
     async def check_wakeup_tick(self) -> None:
         """Periodic check (~5s) driving anti-oversleep prompt & automatic alarm re-trigger."""
@@ -260,22 +292,29 @@ class AlarmEngine:
             if self._active_session is not None or self._wakeup_state == "idle":
                 return
             if self._wakeup_state == "waiting" and now >= self._wakeup_check_at:
+                import secrets
                 self._wakeup_state = "prompt"
                 self._wakeup_deadline = now + 45.0
+                if self.anti_oversleep_level >= 2:
+                    self._wakeup_captcha = "".join(secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(5))
+                else:
+                    self._wakeup_captcha = ""
                 try:
                     self._publish_alarm_mqtt({
                         "action": "math_alarm_wakeup_check",
                         "timeout_sec": 45,
+                        "level": self.anti_oversleep_level,
+                        "captcha": self._wakeup_captcha,
                     })
                 except AlarmPublishError:
                     pass
-                self._emit_notify(
-                    "wakeup_check",
-                    "Bạn còn thức chứ?",
-                    "Bấm xác nhận trên ESP32, Web hoặc ĐT trong 45s nếu không báo thức sẽ reo lại!",
-                    "urgent",
+                msg_body = (
+                    f"Nhập mã xác nhận '{self._wakeup_captcha}' trên Web/App trong 45s để chứng minh bạn đã tỉnh!"
+                    if self.anti_oversleep_level >= 2 and self._wakeup_captcha
+                    else "Bấm xác nhận trên ESP32, Web hoặc ĐT trong 45s nếu không báo thức sẽ reo lại!"
                 )
-                logger.info("[AlarmEngine] Anti-oversleep prompt sent (45s window).")
+                self._emit_notify("wakeup_check", "Bạn còn thức chứ?", msg_body, "urgent")
+                logger.info(f"[AlarmEngine] Anti-oversleep L{self.anti_oversleep_level} prompt sent (45s window).")
             elif self._wakeup_state == "prompt" and now >= self._wakeup_deadline:
                 import random
                 a = random.randint(12, 48)

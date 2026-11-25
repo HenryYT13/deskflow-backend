@@ -61,7 +61,7 @@ class AppApiHandler:
         return web.json_response({
             "status": "healthy",
             "service": "deskflow-unified-backend",
-            "version": "2.2.1"
+            "version": "2.3.0"
         })
 
     # --- Control / Alarm ---
@@ -133,11 +133,16 @@ class AppApiHandler:
     async def handle_timetable_today(self, request: web.Request) -> web.Response:
         await self._authenticate(request, required_scope="control")
         try:
-            # Fetch dual day timetable from PocketBase
             dual_tkb = await timetable.get_dual_day_tkb()
+            sched = await timetable.fetch_current_weekly_schedule()
+            live = timetable.get_live_period_status((dual_tkb or {}).get("today"))
+            stats = timetable.get_weekly_subject_stats((sched or {}).get("schedule_data") or {})
             return web.json_response({
                 "success": True,
-                "data": dual_tkb
+                "data": dual_tkb,
+                "live": live,
+                "stats": stats,
+                "source": (sched or {}).get("source", "pocketbase"),
             })
         except Exception as e:
             logger.error(f"[AppAPI] Failed to fetch timetable: {e}", exc_info=True)
@@ -336,8 +341,47 @@ class AppApiHandler:
 
     async def handle_alarm_confirm_awake(self, request: web.Request) -> web.Response:
         await self._authenticate(request, required_scope="control")
-        res = await alarm_engine.confirm_awake()
-        return web.json_response(res)
+        data = {}
+        if request.can_read_body:
+            try:
+                data = await self._parse_json(request)
+            except Exception:
+                data = {}
+        try:
+            res = await alarm_engine.confirm_awake(captcha=data.get("captcha"))
+            return web.json_response(res)
+        except ValueError as ve:
+            return error_response(str(ve), status=400)
+
+    async def handle_alarm_shake_dismiss(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        data = {}
+        if request.can_read_body:
+            try:
+                data = await self._parse_json(request)
+            except Exception:
+                data = {}
+        try:
+            shakes = int(data.get("shakes", 20))
+            res = await alarm_engine.shake_dismiss_active_alarm(shakes=shakes)
+            return web.json_response(res)
+        except ValueError as ve:
+            return error_response(str(ve), status=400)
+
+    async def handle_alarm_anti_oversleep_config(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        data = await self._parse_json(request)
+        alarm_engine.set_anti_oversleep(
+            enabled=data.get("enabled"),
+            delay_sec=data.get("delay_sec"),
+            level=data.get("level"),
+        )
+        return web.json_response({
+            "success": True,
+            "enabled": alarm_engine.anti_oversleep_enabled,
+            "delay_sec": alarm_engine.anti_oversleep_delay_sec,
+            "level": alarm_engine.anti_oversleep_level,
+        })
 
     async def handle_notifications_get(self, request: web.Request) -> web.Response:
         await self._authenticate(request, required_scope="control")
@@ -879,15 +923,26 @@ class AppApiHandler:
         try:
             import scheduler
             res = await scheduler.get_weather_forecast(city=city)
+            aqi_uv = await scheduler.get_weather_aqi_uv(city=city)
             return web.json_response({
                 "success": True,
                 "city": res.get("city", ""),
                 "available": res.get("available", False),
                 "intervals": res.get("intervals", []),
-                "data": res
+                "aqi_uv": aqi_uv,
+                "data": {**res, "aqi_uv": aqi_uv},
             })
         except Exception as e:
             return error_response(f"forecast_error: {e}", status=500)
+
+    async def handle_weather_aqi(self, request: web.Request) -> web.Response:
+        city = request.query.get("city")
+        try:
+            import scheduler
+            aqi_uv = await scheduler.get_weather_aqi_uv(city=city)
+            return web.json_response({"success": True, **aqi_uv})
+        except Exception as e:
+            return error_response(f"aqi_error: {e}", status=500)
 
     # --- Backward-compatible endpoints ---
     async def handle_sticky_note(self, request: web.Request) -> web.Response:
@@ -1544,6 +1599,207 @@ class AppApiHandler:
         except ValueError as ve:
             return error_response(str(ve), status=400)
 
+    # --- (#16) Excel Timetable Upload & Revert, (#17) Stats, (#11) Formulas ---
+    async def handle_timetable_upload_excel(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        raw_bytes = b""
+        week_num = request.query.get("week_number")
+        if request.content_type.startswith("multipart/"):
+            reader = await request.multipart()
+            async for field in reader:
+                if field.name == "file":
+                    raw_bytes = await field.read()
+                elif field.name == "week_number":
+                    week_num = (await field.text()).strip() or week_num
+        else:
+            raw_bytes = await request.read()
+        if not raw_bytes:
+            return error_response("missing_excel_file", status=400)
+        try:
+            saved = await asyncio.to_thread(timetable.parse_excel_timetable, raw_bytes, week_num)
+            dual_tkb = await timetable.get_dual_day_tkb()
+            stats = timetable.get_weekly_subject_stats(saved.get("schedule_data") or {})
+            try:
+                station_control.mqtt_publish("deskflow/schedule", json.dumps(timetable.build_station_payload(dual_tkb), ensure_ascii=False))
+            except Exception:
+                pass
+            return web.json_response({
+                "success": True,
+                "source": "excel_custom",
+                "week_number": saved.get("week_number"),
+                "data": dual_tkb,
+                "stats": stats,
+            })
+        except ValueError as ve:
+            return error_response(str(ve), status=400)
+        except Exception as e:
+            return error_response(f"excel_parse_failed: {e}", status=400)
+
+    async def handle_timetable_custom_clear(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        removed = timetable.clear_custom_timetable()
+        dual_tkb = await timetable.get_dual_day_tkb()
+        return web.json_response({"success": True, "removed": removed, "data": dual_tkb})
+
+    async def handle_timetable_stats(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        sched = await timetable.fetch_current_weekly_schedule()
+        dual_tkb = await timetable.get_dual_day_tkb()
+        stats = timetable.get_weekly_subject_stats((sched or {}).get("schedule_data") or {})
+        live = timetable.get_live_period_status((dual_tkb or {}).get("today"))
+        return web.json_response({"success": True, "stats": stats, "live": live, "source": (sched or {}).get("source", "pocketbase")})
+
+    async def handle_formulas_get(self, request: web.Request) -> web.Response:
+        return web.json_response({
+            "success": True,
+            "formulas": timetable.QUICK_FORMULAS,
+            "elements": timetable.PERIODIC_ELEMENTS,
+        })
+
+    # --- (#18) Calendar Holiday Toggle ---
+    async def handle_calendar_holiday(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        data = await self._parse_json(request)
+        date_str = str(data.get("date") or "")
+        is_hol = data.get("is_holiday")
+        try:
+            res = calendar_service.toggle_holiday_date(date_str, is_hol)
+            return web.json_response(res)
+        except ValueError as ve:
+            return error_response(str(ve), status=400)
+
+    # --- (#75) ESP32 Screenshot Capture & Image Feed ---
+    async def handle_screenshot_capture(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        prev_ts = int(station_control.device_settings.get("last_screenshot_at") or 0)
+        res = station_control.request_screenshot()
+        for _ in range(20):
+            await asyncio.sleep(0.2)
+            if int(station_control.device_settings.get("last_screenshot_at") or 0) > prev_ts:
+                break
+        return web.json_response({
+            **res,
+            "ready": int(station_control.device_settings.get("last_screenshot_at") or 0) > prev_ts,
+            "last_screenshot_at": station_control.device_settings.get("last_screenshot_at"),
+        })
+
+    async def handle_station_screenshot_upload(self, request: web.Request) -> web.Response:
+        raw = await request.read()
+        try:
+            w = int(request.query.get("w", "240"))
+            h = int(request.query.get("h", "320"))
+            res = await asyncio.to_thread(station_control.save_screenshot_rgb565_rle, w, h, raw)
+            return web.json_response(res)
+        except Exception as e:
+            return error_response(f"screenshot_save_failed: {e}", status=400)
+
+    async def handle_screenshot_latest(self, request: web.Request) -> web.Response:
+        raw = station_control.get_latest_screenshot_bytes()
+        if not raw:
+            return error_response("no_screenshot", status=404)
+        return web.Response(body=raw, content_type="image/bmp", headers={"Cache-Control": "no-store"})
+
+    # --- (#57) GitHub Stats & ESP32 HTTP Pair-Code Fallback ---
+    async def handle_github_sync(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        data = {}
+        if request.can_read_body:
+            try:
+                data = await self._parse_json(request)
+            except Exception:
+                data = {}
+        res = await station_control.sync_github_stats(username=data.get("username"))
+        return web.json_response(res)
+
+    async def handle_station_pair_code_http(self, request: web.Request) -> web.Response:
+        raw_code, expires_at = await self.auth.generate_pairing_code(scopes=["focus", "control", "spotify"])
+        qr_payload = f"deskflow://pair?code={raw_code}"
+        qr_size = 0
+        qr_bits_hex = ""
+        try:
+            import qrcode
+            qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=1, border=1)
+            qr.add_data(qr_payload)
+            qr.make(fit=True)
+            matrix = qr.get_matrix()
+            qr_size = len(matrix)
+            buf = bytearray((qr_size * qr_size + 7) // 8)
+            bit_idx = 0
+            for row in matrix:
+                for val in row:
+                    if val:
+                        buf[bit_idx >> 3] |= (1 << (7 - (bit_idx & 7)))
+                    bit_idx += 1
+            qr_bits_hex = buf.hex().upper()
+        except Exception:
+            pass
+        return web.json_response({
+            "success": True,
+            "code": raw_code,
+            "qr_payload": qr_payload,
+            "qr_size": qr_size,
+            "qr_bits": qr_bits_hex,
+            "expires_at": expires_at,
+            "expires_in": 600,
+            "full_access": True,
+        })
+
+    # --- (#132, #140) Spotify Queue & Playback Devices ---
+    async def handle_spotify_queue(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="spotify")
+        q = await asyncio.to_thread(spotify_service.get_playback_queue)
+        return web.json_response({"success": True, **q})
+
+    async def handle_spotify_devices(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="spotify")
+        devs = await asyncio.to_thread(spotify_service.get_available_devices)
+        return web.json_response({"success": True, "devices": devs})
+
+    async def handle_spotify_transfer(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="spotify")
+        data = await self._parse_json(request)
+        dev_id = str(data.get("device_id") or "").strip()
+        if not dev_id:
+            return error_response("device_id_required", status=400)
+        try:
+            res = await asyncio.to_thread(spotify_service.transfer_playback_device, dev_id, True)
+            return web.json_response(res)
+        except Exception as e:
+            return error_response(f"transfer_failed: {e}", status=500)
+
+    # --- (#157) GitHub & Vercel Webhooks -> LED Flash + Push ---
+    async def handle_webhook_github(self, request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        repo = str((data.get("repository") or {}).get("name") or "deskflow")
+        if "workflow_run" in data:
+            wr = data["workflow_run"] or {}
+            status = str(wr.get("conclusion") or wr.get("status") or "updated")
+            summary = f"{wr.get('name', 'Workflow')}: {status}"
+        elif "commits" in data:
+            cnt = len(data.get("commits") or [])
+            status = "pushed"
+            summary = f"Push +{cnt} commit(s) -> {repo}"
+        else:
+            status = str(request.headers.get("X-GitHub-Event") or "event")
+            summary = f"GitHub {status} on {repo}"
+        res = station_control.record_webhook_event("github", repo, status, summary)
+        return web.json_response(res)
+
+    async def handle_webhook_vercel(self, request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        payload = data.get("payload") if isinstance(data.get("payload"), dict) else data
+        ev_type = str(data.get("type") or payload.get("state") or "deployment")
+        name = str((payload.get("deployment") or {}).get("name") or payload.get("name") or "deskflow-web")
+        summary = f"Vercel {name}: {ev_type}"
+        res = station_control.record_webhook_event("vercel", name, ev_type, summary)
+        return web.json_response(res)
+
 
 def register_app_routes(app: web.Application, auth: FocusAuth) -> None:
     handler = AppApiHandler(auth=auth)
@@ -1642,6 +1898,9 @@ def register_app_routes(app: web.Application, auth: FocusAuth) -> None:
     # Spotify
     app.router.add_get("/api/app/spotify/status", handler.handle_spotify_status)
     app.router.add_get("/api/app/spotify/stats", handler.handle_spotify_stats)
+    app.router.add_get("/api/app/spotify/queue", handler.handle_spotify_queue)
+    app.router.add_get("/api/app/spotify/devices", handler.handle_spotify_devices)
+    app.router.add_post("/api/app/spotify/transfer", handler.handle_spotify_transfer)
     app.router.add_post("/api/app/spotify/playback", handler.handle_spotify_playback)
     app.router.add_post("/api/app/spotify/volume", handler.handle_spotify_volume)
 
@@ -1669,6 +1928,23 @@ def register_app_routes(app: web.Application, auth: FocusAuth) -> None:
     app.router.add_post("/api/app/ai/chat", handler.handle_ai_chat)
     app.router.add_get("/api/public/status", handler.handle_public_status)
     app.router.add_get("/api/public/badge.svg", handler.handle_public_badge_svg)
+
+    # v2.3.0 Extensions (#1, #11, #16, #17, #18, #57, #69, #75, #102, #103, #157)
+    app.router.add_post("/api/app/control/timetable/upload-excel", handler.handle_timetable_upload_excel)
+    app.router.add_delete("/api/app/control/timetable/custom", handler.handle_timetable_custom_clear)
+    app.router.add_get("/api/app/control/timetable/stats", handler.handle_timetable_stats)
+    app.router.add_get("/api/app/control/formulas", handler.handle_formulas_get)
+    app.router.add_post("/api/app/control/calendar/holiday", handler.handle_calendar_holiday)
+    app.router.add_get("/api/app/control/weather/aqi", handler.handle_weather_aqi)
+    app.router.add_post("/api/app/control/screenshot/capture", handler.handle_screenshot_capture)
+    app.router.add_post("/api/app/station/screenshot", handler.handle_station_screenshot_upload)
+    app.router.add_get("/api/app/control/screenshot/latest", handler.handle_screenshot_latest)
+    app.router.add_post("/api/app/control/github/sync", handler.handle_github_sync)
+    app.router.add_get("/api/app/station/pair-code", handler.handle_station_pair_code_http)
+    app.router.add_post("/api/app/control/alarm/shake-dismiss", handler.handle_alarm_shake_dismiss)
+    app.router.add_post("/api/app/control/alarm/anti-oversleep", handler.handle_alarm_anti_oversleep_config)
+    app.router.add_post("/api/webhooks/github", handler.handle_webhook_github)
+    app.router.add_post("/api/webhooks/vercel", handler.handle_webhook_vercel)
 
     # Also register CORS options preflight for /api/app/*
     async def options_app_handler(request: web.Request) -> web.Response:

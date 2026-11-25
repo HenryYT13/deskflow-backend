@@ -673,7 +673,11 @@ class StationControlManager:
 
     def switch_view(self, view: str, tkb_payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         view_clean = view.strip().lower()
-        valid_views = ("main", "stats", "tkb", "weather", "lyrics", "clock", "notes", "countdown", "focus", "calendar", "game")
+        valid_views = (
+            "main", "stats", "tkb", "weather", "lyrics", "clock",
+            "notes", "countdown", "focus", "calendar", "game",
+            "matrix", "vinyl", "github", "formulas",
+        )
         if view_clean not in valid_views:
             raise ValueError(f"Invalid view '{view}'. Must be one of {valid_views}.")
 
@@ -736,8 +740,8 @@ class StationControlManager:
         elif view_clean == "calendar":
             self.sync_calendar_to_station()
             self.mqtt_publish("deskflow/display", json.dumps({"action": "switch_view", "view": "calendar"}))
-        elif view_clean == "game":
-            self.mqtt_publish("deskflow/display", json.dumps({"action": "switch_view", "view": "game"}))
+        elif view_clean in ("game", "matrix", "vinyl", "github", "formulas"):
+            self.mqtt_publish("deskflow/display", json.dumps({"action": "switch_view", "view": view_clean}))
 
         return {"success": True, "view": self.current_screen_mode}
 
@@ -1586,7 +1590,7 @@ class StationControlManager:
             return None
 
     # --- Shopee LED Strip Effects & Ambient Cover Sync ---
-    SUPPORTED_LED_EFFECTS = ("solid", "rainbow", "breathing", "chase", "police", "sparkle", "fire", "strobe", "ambient")
+    SUPPORTED_LED_EFFECTS = ("solid", "rainbow", "breathing", "chase", "police", "sparkle", "fire", "strobe", "ambient", "clock")
 
     def set_lamp_effect(
         self,
@@ -1901,6 +1905,13 @@ class StationControlManager:
                 daemon=True,
             ).start()
         self.broadcast_sse_event("notification", ev)
+        # (#67) Forward concise alert ticker to ESP32 main screen
+        try:
+            clean_ticker = unicodedata.normalize("NFD", f"{title}: {body}".replace("đ", "d").replace("Đ", "D"))
+            clean_ticker = "".join(c for c in clean_ticker if unicodedata.category(c) != "Mn")[:96]
+            self.mqtt_publish("deskflow/display", json.dumps({"action": "notif_ticker", "text": clean_ticker}), qos=0)
+        except Exception:
+            pass
         return ev
 
     @staticmethod
@@ -1983,16 +1994,164 @@ class StationControlManager:
         ok = self.mqtt_publish("deskflow/display", json.dumps(payload, ensure_ascii=False))
         return {"success": ok, "boot_logo": logo_cfg}
 
-    # --- #23 Mini-Game Mode Selector (0=Dino, 1=Flappy, 2=Snake) ---
+    # --- #23 & #58-#63 Mini-Game Mode Selector (0..8) ---
     def set_game_mode(self, mode: int) -> Dict[str, Any]:
-        mode_int = max(0, min(2, int(mode)))
-        mode_names = {0: "Dino Runner", 1: "Flappy Bird", 2: "Snake"}
+        mode_int = max(0, min(8, int(mode)))
+        mode_names = {
+            0: "Dino Runner",
+            1: "Flappy Bird",
+            2: "Snake",
+            3: "2048 Mini",
+            4: "Tetris Mini",
+            5: "Space Invaders",
+            6: "Ping Pong AI",
+            7: "Reaction Tester",
+            8: "Lucky Toolbox",
+        }
         with self._config_lock:
             self.device_settings["active_mini_game"] = mode_int
             self._save_settings()
         payload = {"action": "game_mode", "mode": mode_int}
         ok = self.mqtt_publish("deskflow/display", json.dumps(payload))
         return {"success": ok, "mode": mode_int, "name": mode_names[mode_int]}
+
+    # --- #75 ESP32 Screenshot Capture & Relay ---
+    def request_screenshot(self) -> Dict[str, Any]:
+        ok = self.mqtt_publish("deskflow/display", json.dumps({"action": "take_screenshot"}))
+        return {"success": ok, "requested_at": int(time.time())}
+
+    def save_screenshot_rgb565_rle(self, width: int, height: int, rle_bytes: bytes) -> Dict[str, Any]:
+        """Decodes simple RGB565 RLE [count_u8, hi_u8, lo_u8]... or raw RGB565 into 24-bit BMP."""
+        import struct
+        w = max(1, min(320, int(width)))
+        h = max(1, min(320, int(height)))
+        total_px = w * h
+        pixels_565: List[int] = []
+        if len(rle_bytes) == total_px * 2:
+            for i in range(0, len(rle_bytes), 2):
+                pixels_565.append((rle_bytes[i] << 8) | rle_bytes[i + 1])
+        else:
+            idx = 0
+            n = len(rle_bytes)
+            while idx + 2 < n and len(pixels_565) < total_px:
+                cnt = rle_bytes[idx]
+                px = (rle_bytes[idx + 1] << 8) | rle_bytes[idx + 2]
+                pixels_565.extend([px] * min(cnt, total_px - len(pixels_565)))
+                idx += 3
+        while len(pixels_565) < total_px:
+            pixels_565.append(0)
+
+        row_stride = (w * 3 + 3) & ~3
+        pixel_array = bytearray(row_stride * h)
+        for y in range(h):
+            # BMP stores bottom-up rows
+            dst_row = (h - 1 - y) * row_stride
+            src_row = y * w
+            for x in range(w):
+                c = pixels_565[src_row + x]
+                r8 = ((c >> 11) & 0x1F) * 255 // 31
+                g8 = ((c >> 5) & 0x3F) * 255 // 63
+                b8 = (c & 0x1F) * 255 // 31
+                off = dst_row + x * 3
+                pixel_array[off] = b8
+                pixel_array[off + 1] = g8
+                pixel_array[off + 2] = r8
+
+        file_size = 54 + len(pixel_array)
+        header = struct.pack("<2sIHHI", b"BM", file_size, 0, 0, 54)
+        dib = struct.pack("<IIIHHIIIIII", 40, w, h, 1, 24, 0, len(pixel_array), 2835, 2835, 0, 0)
+        bmp_bytes = header + dib + bytes(pixel_array)
+        out_path = os.path.join(self._data_dir, "latest_screenshot.bmp")
+        os.makedirs(self._data_dir, exist_ok=True)
+        with open(out_path, "wb") as f:
+            f.write(bmp_bytes)
+        with self._config_lock:
+            self.device_settings["last_screenshot_at"] = int(time.time())
+            self._save_settings()
+        return {"success": True, "size_bytes": len(bmp_bytes), "width": w, "height": h}
+
+    def get_latest_screenshot_bytes(self) -> Optional[bytes]:
+        out_path = os.path.join(self._data_dir, "latest_screenshot.bmp")
+        if os.path.exists(out_path):
+            with open(out_path, "rb") as f:
+                return f.read()
+        return None
+
+    # --- #57 GitHub Contributions & CI Status Sync ---
+    async def sync_github_stats(self, username: Optional[str] = None) -> Dict[str, Any]:
+        user = str(username or self.device_settings.get("github_username") or "HenryYT13").strip() or "HenryYT13"
+        repos = 0
+        followers = 0
+        latest_repo = "deskflow-app"
+        ci_status = "PASS"
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            try:
+                ur = await client.get(f"https://api.github.com/users/{user}", headers={"Accept": "application/vnd.github+json"})
+                if ur.status_code == 200:
+                    uj = ur.json()
+                    repos = int(uj.get("public_repos") or 0)
+                    followers = int(uj.get("followers") or 0)
+                rr = await client.get(
+                    f"https://api.github.com/users/{user}/repos?sort=updated&per_page=1",
+                    headers={"Accept": "application/vnd.github+json"},
+                )
+                if rr.status_code == 200 and rr.json():
+                    top = rr.json()[0]
+                    latest_repo = str(top.get("name") or latest_repo)
+                    wr = await client.get(
+                        f"https://api.github.com/repos/{user}/{latest_repo}/actions/runs?per_page=1",
+                        headers={"Accept": "application/vnd.github+json"},
+                    )
+                    if wr.status_code == 200:
+                        runs = wr.json().get("workflow_runs") or []
+                        if runs:
+                            conc = str(runs[0].get("conclusion") or runs[0].get("status") or "success").upper()
+                            ci_status = "PASS" if conc == "SUCCESS" else ("RUN" if conc == "IN_PROGRESS" else "FAIL")
+            except Exception as e:
+                logger.warning(f"[GitHub Stats] Fetch fallback: {e}")
+
+        info = {
+            "username": user,
+            "repos": repos,
+            "followers": followers,
+            "latest_repo": latest_repo,
+            "ci_status": ci_status,
+            "updated_at": int(time.time()),
+        }
+        with self._config_lock:
+            self.device_settings["github_username"] = user
+            self.device_settings["github_stats"] = info
+            self._save_settings()
+        self.mqtt_publish("deskflow/display", json.dumps({"action": "github_stats", **info}, ensure_ascii=False))
+        return {"success": True, **info}
+
+    # --- #157 GitHub / Vercel Webhook Flash & Alert ---
+    def record_webhook_event(self, provider: str, target: str, status: str, summary: str) -> Dict[str, Any]:
+        is_fail = any(k in status.lower() for k in ("fail", "error", "cancel"))
+        ev = {
+            "provider": provider,
+            "target": target,
+            "status": status,
+            "summary": summary,
+            "failed": is_fail,
+            "timestamp": int(time.time()),
+        }
+        with self._config_lock:
+            self.device_settings["last_webhook_event"] = ev
+            self._save_settings()
+        self.push_notification(
+            f"webhook_{provider}",
+            f"{provider.upper()} {target}: {status}",
+            summary,
+            "urgent" if is_fail else "high",
+        )
+        # Flash green or red on the 24-LED ring
+        self.mqtt_publish("deskflow/display", json.dumps({
+            "action": "webhook_flash",
+            "color": "#EF4444" if is_fail else "#22C55E",
+            "summary": summary[:42],
+        }))
+        return {"success": True, "event": ev}
 
     # --- #42 Saved Custom Melody Library ---
     def _load_melody_library(self) -> List[Dict[str, Any]]:
