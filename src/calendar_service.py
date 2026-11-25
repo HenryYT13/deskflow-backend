@@ -477,6 +477,10 @@ class CalendarService:
                 json.dump(self.config, f, indent=2, ensure_ascii=False)
             os.replace(tmp_path, self._config_file)
 
+    def is_oauth_connected(self) -> bool:
+        with self._lock:
+            return bool(self.config.get("google_refresh_token"))
+
     def get_public_status(self) -> Dict[str, Any]:
         with self._lock:
             events = _recompute_event_flags(self.config.get("events_cache", []))
@@ -1212,7 +1216,7 @@ class CalendarService:
         # Refresh existing events to deduplicate cleanly
         await self.sync_events(push_to_station=False)
         existing_tags = set()
-        for ev in self.cached_events:
+        for ev in (self.config.get("events_cache") or []):
             desc = str(ev.get("description") or "")
             for m in re.findall(r"\[DF-TKB:[^\]]+\]", desc):
                 existing_tags.add(m)
@@ -1327,7 +1331,13 @@ class CalendarService:
             location=str(parsed.get("location") or ""),
             description=f"AI Quick Add: {clean_in}",
         )
-        return {"success": True, "parsed": parsed, "event": ev}
+        return {
+            "success": True,
+            "created_id": ev.get("created_id", ""),
+            "status": ev.get("status", {}),
+            "parsed": parsed,
+            "event": ev,
+        }
 
     def push_to_station(self) -> bool:
         try:
