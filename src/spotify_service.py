@@ -156,6 +156,61 @@ def get_available_devices() -> list:
         return []
 
 
+_AUDIO_FEATURES_CACHE: dict[str, dict] = {}
+
+
+def get_track_audio_features(track_id: str) -> dict:
+    """(#259) Lấy BPM, Energy, Valence của bài hát đang phát (có cache)."""
+    global sp_client
+    if not track_id:
+        return {}
+    if track_id in _AUDIO_FEATURES_CACHE:
+        return _AUDIO_FEATURES_CACHE[track_id]
+    if not sp_client:
+        return {}
+    try:
+        feats = sp_client.audio_features([track_id]) or []
+        f = feats[0] if feats and isinstance(feats[0], dict) else {}
+        res = {
+            "bpm": round(float(f.get("tempo", 0)), 1) if f.get("tempo") else None,
+            "energy": round(float(f.get("energy", 0)), 2) if f.get("energy") is not None else None,
+            "valence": round(float(f.get("valence", 0)), 2) if f.get("valence") is not None else None,
+            "danceability": round(float(f.get("danceability", 0)), 2) if f.get("danceability") is not None else None,
+        }
+        _AUDIO_FEATURES_CACHE[track_id] = res
+        if len(_AUDIO_FEATURES_CACHE) > 200:
+            _AUDIO_FEATURES_CACHE.clear()
+        return res
+    except Exception as e:
+        logger.debug(f"[Spotify AudioFeatures] {e}")
+        return {}
+
+
+def get_recently_played(limit: int = 20) -> list:
+    """(#264) Lấy lịch sử 20 bài hát vừa nghe gần nhất."""
+    global sp_client
+    if not sp_client:
+        return []
+    try:
+        res = sp_client.current_user_recently_played(limit=min(50, max(1, limit))) or {}
+        items = []
+        for entry in (res.get("items") or []):
+            tr = entry.get("track") or {}
+            imgs = (tr.get("album") or {}).get("images") or []
+            items.append({
+                "id": tr.get("id", ""),
+                "name": tr.get("name", "Unknown"),
+                "artist": ", ".join(a.get("name", "") for a in (tr.get("artists") or [])),
+                "album": (tr.get("album") or {}).get("name", ""),
+                "cover_url": imgs[-1].get("url") if imgs else None,
+                "played_at": entry.get("played_at", ""),
+            })
+        return items
+    except Exception as e:
+        logger.debug(f"[Spotify History] {e}")
+        return []
+
+
 def transfer_playback_device(device_id: str, force_play: bool = True) -> dict:
     """(#140) Chuyển phát nhạc Spotify sang thiết bị đích."""
     global sp_client

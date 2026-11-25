@@ -1035,6 +1035,9 @@ class AppApiHandler:
                 })
             res = dict(status)
             res["connected"] = True
+            tid = res.get("track_id") or res.get("id") or ""
+            if tid:
+                res["audio_features"] = await asyncio.to_thread(spotify_service.get_track_audio_features, str(tid))
             return web.json_response(res)
         except Exception as e:
             logger.error(f"[AppAPI] Error fetching Spotify status: {e}")
@@ -1878,6 +1881,11 @@ class AppApiHandler:
         q = await asyncio.to_thread(spotify_service.get_playback_queue)
         return web.json_response({"success": True, **q})
 
+    async def handle_spotify_history(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="spotify")
+        items = await asyncio.to_thread(spotify_service.get_recently_played, 20)
+        return web.json_response({"success": True, "history": items})
+
     async def handle_spotify_devices(self, request: web.Request) -> web.Response:
         await self._authenticate(request, required_scope="spotify")
         devs = await asyncio.to_thread(spotify_service.get_available_devices)
@@ -2027,6 +2035,7 @@ def register_app_routes(app: web.Application, auth: FocusAuth) -> None:
     app.router.add_get("/api/app/spotify/status", handler.handle_spotify_status)
     app.router.add_get("/api/app/spotify/stats", handler.handle_spotify_stats)
     app.router.add_get("/api/app/spotify/queue", handler.handle_spotify_queue)
+    app.router.add_get("/api/app/spotify/history", handler.handle_spotify_history)
     app.router.add_get("/api/app/spotify/devices", handler.handle_spotify_devices)
     app.router.add_post("/api/app/spotify/transfer", handler.handle_spotify_transfer)
     app.router.add_post("/api/app/spotify/playback", handler.handle_spotify_playback)
