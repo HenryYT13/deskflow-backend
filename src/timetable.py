@@ -8,6 +8,30 @@ WEEKDAY_MAP = {
     0: "Thứ 2", 1: "Thứ 3", 2: "Thứ 4", 3: "Thứ 5", 4: "Thứ 6", 5: "Thứ 7", 6: "Chủ Nhật"
 }
 
+# Lịch ra vào lớp thực hiện từ 24/8/2026
+MORNING_PERIOD_TIMES = {
+    1: ("07:15", "08:00"),
+    2: ("08:05", "08:50"),
+    3: ("09:05", "09:50"),
+    4: ("09:55", "10:40"),
+    5: ("10:50", "11:35"),
+}
+
+AFTERNOON_PERIOD_TIMES = {
+    1: ("14:00", "14:45"),
+    2: ("14:50", "15:35"),
+    3: ("15:40", "16:25"),
+    4: ("16:30", "17:15"),
+    5: ("17:20", "18:05"),
+}
+
+BELL_META = {
+    "morning_arrive": "06:30 - 07:00",
+    "morning_prep": "07:00 - 07:15",
+    "afternoon_gate": "13:30",
+    "afternoon_arrive": "13:50",
+}
+
 async def fetch_current_weekly_schedule() -> dict:
     """Lấy dữ liệu TKB của tuần đang active (is_hidden = False) từ PocketBase API"""
     url = f"{config.POCKETBASE_URL}/api/collections/weekly_schedules/records?filter=(is_hidden=false)&sort=-created&perPage=1"
@@ -33,51 +57,55 @@ async def fetch_current_weekly_schedule() -> dict:
     return {}
 
 def parse_day_data(schedule_data: dict, day_name: str) -> dict:
-    """Bóc tách các môn sáng, chiều và đồng phục chuẩn xác, chống trượt key"""
+    """Bóc tách các môn sáng, chiều, giờ từng tiết và đồng phục chuẩn xác."""
     empty_res = {
         "day": day_name,
         "morning": [],
+        "morning_slots": [],
         "dp_sang": "Tự do",
         "has_afternoon": False,
         "afternoon": [],
+        "afternoon_slots": [],
         "dp_chieu": "",
+        "dismissal_morning": "",
+        "dismissal_afternoon": "",
+        "bell_meta": dict(BELL_META),
         "has_any_class": False,
     }
 
     if not schedule_data or not isinstance(schedule_data, dict):
         return empty_res
 
-    # Danh sách các biến thể tên ngày để dò key (VD: Thứ 4, Thu 4, T4)
     day_variants = [day_name]
     if "Thứ " in day_name:
         day_variants.append(day_name.replace("Thứ ", "Thu "))
         day_variants.append(day_name.replace("Thứ ", "T"))
 
-    # 1. Bóc tách tiết Sáng
-    morning_subs = []
-    for i in range(1, 6):
-        subj = ""
-        for d_var in day_variants:
-            val = schedule_data.get(f"sang-{d_var}-{i}", "")
-            if val and val.strip():
-                subj = val.strip()
-                break
-        if subj:
-            morning_subs.append(f"Tiết {i}: {subj}")
+    def _extract_session(prefix: str, time_table: dict):
+        subs = []
+        slots = []
+        for i in range(1, 6):
+            subj = ""
+            for d_var in day_variants:
+                val = schedule_data.get(f"{prefix}-{d_var}-{i}", "")
+                if val and val.strip():
+                    subj = val.strip()
+                    break
+            if subj:
+                st, en = time_table.get(i, ("", ""))
+                subs.append(f"Tiết {i}: {subj} ({st}-{en})" if st else f"Tiết {i}: {subj}")
+                slots.append({
+                    "period": i,
+                    "subject": subj,
+                    "start_time": st,
+                    "end_time": en,
+                    "session": "morning" if prefix == "sang" else "afternoon",
+                })
+        return subs, slots
 
-    # 2. Bóc tách tiết Chiều
-    afternoon_subs = []
-    for i in range(1, 6):
-        subj = ""
-        for d_var in day_variants:
-            val = schedule_data.get(f"chieu-{d_var}-{i}", "")
-            if val and val.strip():
-                subj = val.strip()
-                break
-        if subj:
-            afternoon_subs.append(f"Tiết {i}: {subj}")
+    morning_subs, morning_slots = _extract_session("sang", MORNING_PERIOD_TIMES)
+    afternoon_subs, afternoon_slots = _extract_session("chieu", AFTERNOON_PERIOD_TIMES)
 
-    # 3. Bóc tách Đồng phục
     dp_sang = "Tự do"
     dp_chieu = ""
     for d_var in day_variants:
@@ -90,14 +118,21 @@ def parse_day_data(schedule_data: dict, day_name: str) -> dict:
 
     has_afternoon = len(afternoon_subs) > 0
     has_any = (len(morning_subs) > 0) or has_afternoon
+    dismissal_m = morning_slots[-1]["end_time"] if morning_slots else ""
+    dismissal_a = afternoon_slots[-1]["end_time"] if afternoon_slots else ""
 
     return {
         "day": day_name,
         "morning": morning_subs,
+        "morning_slots": morning_slots,
         "dp_sang": dp_sang,
         "has_afternoon": has_afternoon,
         "afternoon": afternoon_subs if has_afternoon else [],
+        "afternoon_slots": afternoon_slots if has_afternoon else [],
         "dp_chieu": dp_chieu if has_afternoon else "",
+        "dismissal_morning": dismissal_m,
+        "dismissal_afternoon": dismissal_a,
+        "bell_meta": dict(BELL_META),
         "has_any_class": has_any,
     }
 
@@ -182,8 +217,13 @@ def build_station_payload(dual_tkb: dict) -> dict:
     today = (dual_tkb or {}).get("today") or {}
     tom = (dual_tkb or {}).get("tomorrow") or {}
 
-    morning = [clean(s.split(": ")[-1]) for s in today.get("morning", []) if s.strip()]
-    afternoon = [clean(s.split(": ")[-1]) for s in today.get("afternoon", []) if s.strip()]
+    def _esp_subj(item_slots, fallback_list):
+        if item_slots:
+            return [clean(s["subject"]) for s in item_slots]
+        return [clean(s.split(": ", 1)[-1].split(" (", 1)[0]) for s in fallback_list if s.strip()]
+
+    morning = _esp_subj(today.get("morning_slots"), today.get("morning", []))
+    afternoon = _esp_subj(today.get("afternoon_slots"), today.get("afternoon", []))
     has_afternoon = bool(today.get("has_afternoon")) and bool(afternoon)
 
     dp_sang = clean(today.get("dp_sang", "Tu do"))
@@ -195,8 +235,8 @@ def build_station_payload(dual_tkb: dict) -> dict:
     else:
         uniform = dp_sang
 
-    tom_morning = [clean(s.split(": ")[-1]) for s in tom.get("morning", []) if s.strip()]
-    tom_afternoon = [clean(s.split(": ")[-1]) for s in tom.get("afternoon", []) if s.strip()]
+    tom_morning = _esp_subj(tom.get("morning_slots"), tom.get("morning", []))
+    tom_afternoon = _esp_subj(tom.get("afternoon_slots"), tom.get("afternoon", []))
     tom_has_afternoon = bool(tom.get("has_afternoon")) and bool(tom_afternoon)
     tom_dp_sang = clean(tom.get("dp_sang", "Tu do"))
     tom_dp_chieu = clean(tom.get("dp_chieu", ""))

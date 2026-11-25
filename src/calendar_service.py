@@ -971,6 +971,7 @@ class CalendarService:
         location: str = "",
         description: str = "",
         calendar_id: Optional[str] = None,
+        sync_after: bool = True,
     ) -> Dict[str, Any]:
         clean_title = title.strip()
         if not clean_title:
@@ -1029,10 +1030,10 @@ class CalendarService:
                 raise RuntimeError(f"Create event failed ({resp.status_code}): {resp.text[:220]}")
             created_raw = resp.json()
 
-        status = await self.sync_events(push_to_station=True)
+        status = await self.sync_events(push_to_station=True) if sync_after else self.get_public_status()
         return {"created_id": created_raw.get("id", ""), "status": status}
 
-    async def delete_event(self, event_id: str, calendar_id: Optional[str] = None) -> Dict[str, Any]:
+    async def delete_event(self, event_id: str, calendar_id: Optional[str] = None, sync_after: bool = True) -> Dict[str, Any]:
         clean_id = event_id.strip()
         if not clean_id:
             raise ValueError("event_id_required")
@@ -1052,7 +1053,7 @@ class CalendarService:
             if resp.status_code not in (200, 204):
                 raise RuntimeError(f"Delete event failed ({resp.status_code}): {resp.text[:220]}")
 
-        return await self.sync_events(push_to_station=True)
+        return await self.sync_events(push_to_station=True) if sync_after else self.get_public_status()
 
     def build_station_payload(self, max_events: int = 90) -> Dict[str, Any]:
         """Compact 2-month Month-Grid + Day-Events UTF-8 payload pushed to ESP32 (< 7.5 KB)."""
@@ -1180,9 +1181,14 @@ class CalendarService:
                 "date": d_date.isoformat(),
                 "day": day_name,
                 "morning": info.get("morning") or [],
+                "morning_slots": info.get("morning_slots") or [],
                 "afternoon": info.get("afternoon") or [],
+                "afternoon_slots": info.get("afternoon_slots") or [],
                 "has_afternoon": bool(info.get("has_afternoon")),
                 "uniform": info.get("dp_sang") or "Tự do",
+                "uniform_afternoon": info.get("dp_chieu") or "",
+                "dismissal_morning": info.get("dismissal_morning") or "",
+                "dismissal_afternoon": info.get("dismissal_afternoon") or "",
             })
 
         ai_summaries: Dict[str, Dict[str, str]] = {}
@@ -1214,13 +1220,23 @@ class CalendarService:
             except Exception as e:
                 logger.warning(f"[Calendar AI TKB] Groq formatting fallback: {e}")
 
-        # Refresh existing events to deduplicate cleanly
+        # Refresh existing events to deduplicate cleanly & remove legacy coarse blocks
         await self.sync_events(push_to_station=False)
         existing_tags = set()
-        for ev in (self.config.get("events_cache") or []):
+        target_dates = {item["date"] for item in parsed_days}
+        for ev in list(self.config.get("events_cache") or []):
             desc = str(ev.get("description") or "")
-            for m in re.findall(r"\[DF-TKB:[^\]]+\]", desc):
+            tags = re.findall(r"\[DF-TKB:[^\]]+\]", desc)
+            for m in tags:
                 existing_tags.add(m)
+            # Clean up old coarse blocks ([DF-TKB:YYYY-MM-DD:M] or :A without slot number)
+            if ev.get("can_delete") and ev.get("id"):
+                for m in tags:
+                    if re.match(r"^\[DF-TKB:\d{4}-\d{2}-\d{2}:[MA]\]$", m) and ev.get("date") in target_dates:
+                        try:
+                            await self.delete_event(ev["id"], calendar_id=ev.get("calendar_id"), sync_after=False)
+                        except Exception:
+                            pass
 
         created = 0
         skipped = 0
@@ -1230,43 +1246,42 @@ class CalendarService:
             ai_d = ai_summaries.get(d_iso) if isinstance(ai_summaries.get(d_iso), dict) else {}
             tip = str(ai_d.get("tip") or "").strip()
 
-            if item["morning"]:
-                tag = f"[DF-TKB:{d_iso}:M]"
-                if tag in existing_tags:
-                    skipped += 1
-                else:
-                    default_title = f"Học sáng: {', '.join(item['morning'])}"
-                    title = str(ai_d.get("morning_title") or default_title)[:95]
-                    desc = f"{tag}\nTuần {week_num} • Đồng phục: {item['uniform']}\nMôn: {', '.join(item['morning'])}"
+            sessions = [
+                ("M", "Sáng", item.get("morning_slots") or [], item["uniform"], item.get("dismissal_morning") or "11:35"),
+                ("A", "Chiều", item.get("afternoon_slots") or [], item.get("uniform_afternoon") or item["uniform"], item.get("dismissal_afternoon") or "16:25"),
+            ]
+            for sess_code, sess_lbl, slots, uni_txt, dismiss_str in sessions:
+                for slot in slots:
+                    p_num = slot.get("period", 1)
+                    subj = slot.get("subject", "")
+                    st_t = slot.get("start_time") or ("07:15" if sess_code == "M" else "14:00")
+                    en_t = slot.get("end_time") or ("08:00" if sess_code == "M" else "14:45")
+                    tag = f"[DF-TKB:{d_iso}:{sess_code}{p_num}]"
+                    if tag in existing_tags:
+                        skipped += 1
+                        continue
+                    title = (
+                        f"Tiết {p_num}: {subj}"
+                        if sess_code == "M"
+                        else f"Chiều Tiết {p_num}: {subj}"
+                    )[:95]
+                    bell_note = (
+                        f"Có mặt 06:30–07:00 • Đầu giờ 07:00–07:15 • Ra về {dismiss_str}"
+                        if sess_code == "M"
+                        else f"Mở cổng 13:30 • Có mặt 13:50 • Ra về {dismiss_str}"
+                    )
+                    desc = f"{tag}\nTuần {week_num} ({sess_lbl}) • Đồng phục: {uni_txt}\n{bell_note}"
                     if tip:
                         desc += f"\nGợi ý AI: {tip}"
                     await self.create_event(
                         title=title,
                         date_str=d_iso,
-                        start_time="07:15",
-                        end_time="11:30",
+                        start_time=st_t,
+                        end_time=en_t,
                         all_day=False,
                         location="Trường học",
                         description=desc,
-                    )
-                    created += 1
-
-            if item["has_afternoon"] and item["afternoon"]:
-                tag = f"[DF-TKB:{d_iso}:A]"
-                if tag in existing_tags:
-                    skipped += 1
-                else:
-                    default_title = f"Học chiều: {', '.join(item['afternoon'])}"
-                    title = str(ai_d.get("afternoon_title") or default_title)[:95]
-                    desc = f"{tag}\nTuần {week_num} • Môn chiều: {', '.join(item['afternoon'])}"
-                    await self.create_event(
-                        title=title,
-                        date_str=d_iso,
-                        start_time="14:00",
-                        end_time="16:45",
-                        all_day=False,
-                        location="Trường học",
-                        description=desc,
+                        sync_after=False,
                     )
                     created += 1
 
