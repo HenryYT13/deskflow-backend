@@ -421,6 +421,8 @@ def on_connect(client, userdata, flags, rc, properties=None):
         client.subscribe("deskflow/hardware_settings_request")
         client.subscribe("deskflow/pair_request")
         client.subscribe("deskflow/screenshot")
+        client.subscribe("deskflow/system/restart")
+        client.subscribe("deskflow/serial/log")
     else:
         logger.error(f"[MQTT Error] Lỗi kết nối Broker: rc={rc}")
 
@@ -466,6 +468,12 @@ def on_message(client, userdata, msg):
                 logger.info(f"[Screenshot] Captured {w}x{h} frame ({len(raw_rle)} bytes RLE)")
         except Exception as se:
             logger.warning(f"[Screenshot] Decode error: {se}")
+    elif topic == "deskflow/serial/log":
+        from src import v24_features
+        v24_features.append_serial_log(str(data.get("line") or payload_str))
+    elif topic == "deskflow/system/restart":
+        logger.warning("[System] Emergency restart requested from ESP32 via MQTT!")
+        os._exit(1)
     elif topic == config.TOPIC_MATH_TRIGGER:
         device_status["math_active"] = True
         device_status["current_math_answer"] = str(data.get("answer"))

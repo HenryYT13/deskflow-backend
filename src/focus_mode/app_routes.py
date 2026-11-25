@@ -61,7 +61,7 @@ class AppApiHandler:
         return web.json_response({
             "status": "healthy",
             "service": "deskflow-unified-backend",
-            "version": "2.3.0"
+            "version": "2.4.0"
         })
 
     # --- Control / Alarm ---
@@ -1650,11 +1650,139 @@ class AppApiHandler:
         return web.json_response({"success": True, "stats": stats, "live": live, "source": (sched or {}).get("source", "pocketbase")})
 
     async def handle_formulas_get(self, request: web.Request) -> web.Response:
+        from src import v24_features
+        custom = v24_features.get_custom_formulas()
         return web.json_response({
             "success": True,
-            "formulas": timetable.QUICK_FORMULAS,
+            "formulas": custom + timetable.QUICK_FORMULAS,
+            "custom_formulas": custom,
             "elements": timetable.PERIODIC_ELEMENTS,
         })
+
+    async def handle_formulas_custom_post(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        from src import v24_features
+        data = await self._parse_json(request)
+        title = str(data.get("title") or "").strip()
+        formula = str(data.get("formula") or "").strip()
+        if not title or not formula:
+            return error_response("missing_title_or_formula", status=400)
+        item = v24_features.add_custom_formula(
+            subject=str(data.get("subject") or "Khác"),
+            title=title,
+            formula=formula,
+            note=str(data.get("note") or ""),
+        )
+        return web.json_response({"success": True, "item": item, "custom_formulas": v24_features.get_custom_formulas()})
+
+    async def handle_formulas_custom_delete(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        from src import v24_features
+        fid = request.match_info.get("id", "")
+        ok = v24_features.delete_custom_formula(fid)
+        return web.json_response({"success": ok, "custom_formulas": v24_features.get_custom_formulas()})
+
+    async def handle_teachers_get(self, request: web.Request) -> web.Response:
+        from src import v24_features
+        return web.json_response({"success": True, "teachers": v24_features.get_teachers()})
+
+    async def handle_teachers_post(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        from src import v24_features
+        data = await self._parse_json(request)
+        name = str(data.get("name") or "").strip()
+        subject = str(data.get("subject") or "").strip()
+        if not name or not subject:
+            return error_response("missing_name_or_subject", status=400)
+        item = v24_features.add_teacher(
+            name=name,
+            subject=subject,
+            phone=str(data.get("phone") or ""),
+            zalo=str(data.get("zalo") or ""),
+            email=str(data.get("email") or ""),
+            note=str(data.get("note") or ""),
+        )
+        return web.json_response({"success": True, "teacher": item, "teachers": v24_features.get_teachers()})
+
+    async def handle_teachers_delete(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        from src import v24_features
+        tid = request.match_info.get("id", "")
+        ok = v24_features.delete_teacher(tid)
+        return web.json_response({"success": ok, "teachers": v24_features.get_teachers()})
+
+    async def handle_notes_export(self, request: web.Request) -> web.Response:
+        notes = station_control.get_notes()
+        lines = ["# DeskFlow Notes Export\n"]
+        for n in notes:
+            title = n.get("title") or n.get("id") or "Ghi chú"
+            content = n.get("content") or n.get("text") or ""
+            lines.append(f"## {title}\n\n{content}\n")
+        md = "\n---\n\n".join(lines)
+        return web.Response(
+            text=md,
+            content_type="text/markdown",
+            headers={"Content-Disposition": 'attachment; filename="deskflow-notes.md"'},
+        )
+
+    async def handle_alarm_check_tomorrow(self, request: web.Request) -> web.Response:
+        from datetime import datetime, timedelta
+        from src import alarm_engine
+        tomorrow = (datetime.now() + timedelta(days=1)).weekday()
+        has_early = tomorrow < 6
+        alarms = alarm_engine.list_alarms() if hasattr(alarm_engine, "list_alarms") else []
+        enabled_early = any(a.get("enabled", True) and int(a.get("hour", 9)) <= 7 for a in alarms)
+        return web.json_response({
+            "success": True,
+            "has_early_period": has_early,
+            "has_early_alarm": enabled_early,
+            "warn": has_early and not enabled_early,
+            "message": "Ngày mai có tiết 1 lúc 7h15 nhưng bạn chưa bật báo thức!" if (has_early and not enabled_early) else "",
+        })
+
+    async def handle_device_battery_post(self, request: web.Request) -> web.Response:
+        from src import v24_features
+        data = await self._parse_json(request)
+        res = v24_features.update_phone_battery(int(data.get("level", 100)), bool(data.get("charging", False)))
+        station_control.publish_mqtt("deskflow/device/battery", json.dumps(res))
+        return web.json_response({"success": True, **res})
+
+    async def handle_device_battery_get(self, request: web.Request) -> web.Response:
+        from src import v24_features
+        return web.json_response({"success": True, **v24_features.get_phone_battery()})
+
+    async def handle_device_call_post(self, request: web.Request) -> web.Response:
+        from src import v24_features
+        data = await self._parse_json(request)
+        res = v24_features.record_incoming_call(str(data.get("caller") or "Cuộc gọi đến"), str(data.get("number") or ""))
+        station_control.publish_mqtt("deskflow/device/call", json.dumps(res, ensure_ascii=False))
+        return web.json_response({"success": True, **res})
+
+    async def handle_github_repos_get(self, request: web.Request) -> web.Response:
+        from src import v24_features
+        return web.json_response({"success": True, "repos": v24_features.get_github_repos(), "runs": v24_features.fetch_github_ci_summary()})
+
+    async def handle_github_repos_post(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        from src import v24_features
+        data = await self._parse_json(request)
+        repos = v24_features.add_github_repo(str(data.get("repo") or ""))
+        return web.json_response({"success": True, "repos": repos})
+
+    async def handle_github_repos_delete(self, request: web.Request) -> web.Response:
+        await self._authenticate(request, required_scope="control")
+        from src import v24_features
+        data = await self._parse_json(request)
+        repos = v24_features.delete_github_repo(str(data.get("repo") or ""))
+        return web.json_response({"success": True, "repos": repos})
+
+    async def handle_serial_logs_get(self, request: web.Request) -> web.Response:
+        from src import v24_features
+        return web.json_response({"success": True, "logs": v24_features.get_serial_logs()})
+
+    async def handle_changelog_get(self, request: web.Request) -> web.Response:
+        from src import v24_features
+        return web.json_response({"success": True, **v24_features.CHANGELOG_V240})
 
     # --- (#18) Calendar Holiday Toggle ---
     async def handle_calendar_holiday(self, request: web.Request) -> web.Response:
@@ -1934,6 +2062,21 @@ def register_app_routes(app: web.Application, auth: FocusAuth) -> None:
     app.router.add_delete("/api/app/control/timetable/custom", handler.handle_timetable_custom_clear)
     app.router.add_get("/api/app/control/timetable/stats", handler.handle_timetable_stats)
     app.router.add_get("/api/app/control/formulas", handler.handle_formulas_get)
+    app.router.add_post("/api/app/control/formulas/custom", handler.handle_formulas_custom_post)
+    app.router.add_delete("/api/app/control/formulas/custom/{id}", handler.handle_formulas_custom_delete)
+    app.router.add_get("/api/app/timetable/teachers", handler.handle_teachers_get)
+    app.router.add_post("/api/app/timetable/teachers", handler.handle_teachers_post)
+    app.router.add_delete("/api/app/timetable/teachers/{id}", handler.handle_teachers_delete)
+    app.router.add_get("/api/app/control/notes/export", handler.handle_notes_export)
+    app.router.add_get("/api/app/control/alarm/check-tomorrow", handler.handle_alarm_check_tomorrow)
+    app.router.add_post("/api/app/device/battery", handler.handle_device_battery_post)
+    app.router.add_get("/api/app/device/battery", handler.handle_device_battery_get)
+    app.router.add_post("/api/app/device/call", handler.handle_device_call_post)
+    app.router.add_get("/api/app/github/repos", handler.handle_github_repos_get)
+    app.router.add_post("/api/app/github/repos", handler.handle_github_repos_post)
+    app.router.add_delete("/api/app/github/repos", handler.handle_github_repos_delete)
+    app.router.add_get("/api/app/station/serial-logs", handler.handle_serial_logs_get)
+    app.router.add_get("/api/app/changelog", handler.handle_changelog_get)
     app.router.add_post("/api/app/control/calendar/holiday", handler.handle_calendar_holiday)
     app.router.add_get("/api/app/control/weather/aqi", handler.handle_weather_aqi)
     app.router.add_post("/api/app/control/screenshot/capture", handler.handle_screenshot_capture)
