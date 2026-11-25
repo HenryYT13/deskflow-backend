@@ -1199,10 +1199,11 @@ class CalendarService:
                 def _ask():
                     client = Groq(api_key=groq_key)
                     resp = client.chat.completions.create(
-                        model="llama-3.1-8b-instant",
+                        model="openai/gpt-oss-20b",
                         messages=[{"role": "user", "content": prompt}],
                         temperature=0.3,
-                        max_tokens=700,
+                        max_completion_tokens=1024,
+                        reasoning_effort="low",
                         response_format={"type": "json_object"},
                     )
                     return resp.choices[0].message.content
@@ -1313,10 +1314,11 @@ class CalendarService:
         def _ask():
             c = Groq(api_key=groq_key)
             r = c.chat.completions.create(
-                model="llama-3.1-8b-instant",
+                model="openai/gpt-oss-20b",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
-                max_tokens=300,
+                max_completion_tokens=1024,
+                reasoning_effort="low",
                 response_format={"type": "json_object"},
             )
             return r.choices[0].message.content

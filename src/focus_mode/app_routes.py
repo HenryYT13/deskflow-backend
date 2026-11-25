@@ -1426,13 +1426,14 @@ class AppApiHandler:
             try:
                 def _call_groq():
                     comp = groq_client.chat.completions.create(
-                        model="llama-3.1-8b-instant",
+                        model="openai/gpt-oss-20b",
                         messages=[
                             {"role": "system", "content": sys_prompt},
                             {"role": "user", "content": f"Context: {ctx_summary}\nUser: {message}"},
                         ],
                         temperature=0.2,
-                        max_completion_tokens=300,
+                        max_completion_tokens=1024,
+                        reasoning_effort="low",
                     )
                     return comp.choices[0].message.content or ""
 
