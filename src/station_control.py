@@ -815,6 +815,7 @@ class StationControlManager:
             self.device_settings["lamp_color"] = normalized
             self.device_settings["lamp_color2"] = normalized2
             self.device_settings["led_gradient"] = grad_val
+            self.device_settings["led_rgb"] = False
             self._save_settings()
         payload: Dict[str, Any] = {
             "action": "led_color",
